@@ -6,350 +6,720 @@ import {
   InferSelectModel,
   count,
   getTableName,
+  SQL,
+  and,
+  getTableColumns,
+  inArray,
 } from "drizzle-orm";
-import { Response, Router } from "express";
-import { db } from "@/db/db";
+import { Request, Response, Router, type IRouter } from "express";
 import { createInsertSchema, createUpdateSchema } from "drizzle-zod";
 import { AnyColumn } from "drizzle-orm";
-import z from "zod";
-import { createResourceFilter } from "./filter";
-import expressWs from "express-ws";
+import z, { ZodError } from "zod";
 import { v4 as uuidv4 } from "uuid";
+
+import { createResourceFilter } from "./filter";
+import { recordCreate, recordUpdate, recordDelete, changelog } from "./changelog";
 import {
   createSubscription,
-  Event,
-  kvDelete,
-  kvScan,
-  pushInsertsToSubscriptions,
   removeSubscription,
+  registerHandler,
+  unregisterHandler,
+  pushInsertsToSubscriptions,
+  pushUpdatesToSubscriptions,
+  pushDeletesToSubscriptions,
+  sendExistingItems,
+  sendInvalidateEvent,
+  isHandlerConnected,
+  getHandlerSubscriptions,
 } from "./subscription";
+import {
+  createPagination,
+  decodeCursor,
+  parseOrderBy,
+  OrderByField,
+} from "./pagination";
+import {
+  parseSelect,
+  applyProjection,
+  parseAggregationParams,
+  buildAggregationSelections,
+  transformAggregationResults,
+  createQueryHelper,
+} from "./query";
+import {
+  executeProcedure,
+  executeBeforeCreate,
+  executeAfterCreate,
+  executeBeforeUpdate,
+  executeAfterUpdate,
+  executeBeforeDelete,
+  executeAfterDelete,
+} from "./procedures";
+import {
+  ResourceConfig,
+  CustomOperator,
+  ProcedureDefinition,
+  LifecycleHooks,
+  UserContext,
+  ProcedureContext,
+  DrizzleTransaction,
+} from "./types";
+import {
+  NotFoundError,
+  ValidationError,
+  BatchLimitError,
+  ResourceError,
+  formatZodError,
+} from "./error";
+import { createScopeResolver, combineScopes, Operation } from "@/auth/scope";
+import { AuthenticatedRequest } from "@/auth/types";
+import { createRateLimiter, createOperationRateLimiter } from "@/middleware/rateLimit";
+import { asyncHandler } from "@/middleware/error";
 
-interface BatchConfig {
-  create?: number;
-  update?: number;
-  replace?: number;
-  delete?: number;
-}
+const DEFAULT_BATCH_LIMITS = {
+  create: 100,
+  update: 100,
+  replace: 100,
+  delete: 100,
+};
 
-export interface ResourceConfig<
-  TConfig extends TableConfig,
-  TTable extends Table<TConfig>,
-> {
-  id: AnyColumn<{ tableName: TTable["_"]["name"] }>;
-  batch?: BatchConfig;
-}
+const DEFAULT_PAGINATION = {
+  defaultLimit: 20,
+  maxLimit: 100,
+};
 
 export const useResource = <TConfig extends TableConfig>(
   schema: Table<TConfig>,
   config: ResourceConfig<TConfig, Table<TConfig>>
-) => {
+): IRouter => {
+  const db = config.db;
   const handlerId = uuidv4();
   const resourceName = getTableName(schema);
   const idColumnName = config.id.name;
 
-  const router = Router() as expressWs.Router;
+  const router = Router();
 
-  const filterer = createResourceFilter(schema);
+  const filterer = createResourceFilter(schema, config.customOperators ?? {});
+
+  const pagination = createPagination(
+    schema,
+    config.id,
+    config.pagination ?? DEFAULT_PAGINATION
+  );
+
+  const queryHelper = createQueryHelper(schema);
+
+  const scopeResolver = createScopeResolver(config.auth, resourceName);
 
   const insertSchema = createInsertSchema(schema);
-  const parseInsert = (data: any) => {
-    return insertSchema.parse(data) as InferInsertModel<Table<TConfig>>;
-  };
-  const parseMultiInsert = (data: any) => {
-    return z.object({ items: z.array(insertSchema) }).parse(data) as {
-      items: InferInsertModel<Table<TConfig>>[];
-    };
-  };
   const updateSchema = createUpdateSchema(schema);
-  const parseUpdate = (data: any) => {
-    return updateSchema.parse(data) as InferSelectModel<Table<TConfig>>;
+
+  const parseInsert = (data: unknown) => {
+    try {
+      return insertSchema.parse(data) as InferInsertModel<Table<TConfig>>;
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw new ValidationError("Validation failed", formatZodError(error));
+      }
+      throw error;
+    }
   };
 
-  const batchConfig = config.batch ?? {};
-
-  const {
-    create: batchCreate = 0,
-    update: batchUpdate = 0,
-    replace: batchReplace = 0,
-    delete: batchDelete = 0,
-  } = batchConfig;
-
-  if (batchCreate) {
-    router.post("/batch", async (req, res, next) => {
-      const data = parseMultiInsert(req.body);
-      if (data.items.length > batchCreate) {
-        return res.status(400).send({
-          error: `Batch create limit exceeded. Max ${batchCreate} items allowed.`,
-        });
+  const parseMultiInsert = (data: unknown) => {
+    try {
+      return z.object({ items: z.array(insertSchema) }).parse(data) as {
+        items: InferInsertModel<Table<TConfig>>[];
+      };
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw new ValidationError("Validation failed", formatZodError(error));
       }
-
-      const object = await db.insert(schema).values(data.items).returning();
-
-      pushInsertsToSubscriptions(resourceName, filterer, object);
-
-      res.status(200).send(object);
-    });
-  }
-
-  if (batchUpdate) {
-    router.patch("/batch", async (req, res, next) => {
-      const filterQuery = req.query.filter?.toString() ?? "";
-      const filter = filterer.convert(filterQuery);
-
-      const data = parseUpdate(req.body);
-
-      try {
-        const dbResponse = await db.transaction(async (tx) => {
-          const dbResponse = await tx
-            .update(schema)
-            .set(data)
-            .where(filter)
-            .run();
-
-          if (dbResponse.rowsAffected > batchUpdate) {
-            throw new Error(`update-limit`);
-          }
-
-          return dbResponse;
-        });
-
-        res.status(200).send({ count: dbResponse.rowsAffected });
-      } catch (error) {
-        if (error instanceof Error && error.message === "update-limit") {
-          return res.status(400).send({
-            error: `Batch update limit exceeded. Max ${batchUpdate} items allowed.`,
-          });
-        }
-
-        throw error;
-      }
-    });
-  }
-
-  if (batchReplace) {
-    router.put("/batch", async (req, res, next) => {
-      const filterQuery = req.query.filter?.toString() ?? "";
-      const filter = filterer.convert(filterQuery);
-
-      const data = parseInsert(req.body);
-
-      try {
-        const dbResponse = await db.transaction(async (tx) => {
-          const dbResponse = await tx
-            .update(schema)
-            .set(data)
-            .where(filter)
-            .run();
-
-          if (dbResponse.rowsAffected > batchReplace) {
-            throw new Error(`update-limit`);
-          }
-
-          return dbResponse;
-        });
-
-        res.status(200).send({ count: dbResponse.rowsAffected });
-      } catch (error) {
-        if (error instanceof Error && error.message === "update-limit") {
-          return res.status(400).send({
-            error: `Batch replace limit exceeded. Max ${batchReplace} items allowed.`,
-          });
-        }
-
-        throw error;
-      }
-    });
-  }
-
-  if (batchDelete) {
-    router.delete("/batch", async (req, res, next) => {
-      const filterQuery = req.query.filter?.toString() ?? "";
-      const filter = filterer.convert(filterQuery);
-
-      try {
-        const dbResponse = await db.transaction(async (tx) => {
-          const dbResponse = await tx.delete(schema).where(filter).run();
-
-          if (dbResponse.rowsAffected > batchDelete) {
-            throw new Error(`update-limit`);
-          }
-
-          return dbResponse;
-        });
-
-        res.status(200).send({ count: dbResponse.rowsAffected });
-      } catch (error) {
-        if (error instanceof Error && error.message === "update-limit") {
-          return res.status(400).send({
-            error: `Batch delete limit exceeded. Max ${batchDelete} items allowed.`,
-          });
-        }
-
-        throw error;
-      }
-    });
-  }
-
-  // subscribe
-  const clients = new Map<string, { res: Response }>();
-  router.get("/subscribe", async (req, res) => {
-    const filterQuery = req.query.filter?.toString() ?? "";
-    const filter = filterer.convert(filterQuery);
-
-    console.log("New subscriber with filter:", filterQuery);
-
-    res.set({
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    res.flushHeaders?.();
-
-    res.write(`event: connected\ndata: {}\n\n`);
-
-    const heartbeat = setInterval(() => {
-      res.write(`: ping\n\n`);
-    }, 20000);
-
-    const items = await db.select().from(schema).where(filter);
-
-    const subscriptionId = await createSubscription(
-      resourceName,
-      filterQuery,
-      handlerId,
-      null /* todo */,
-      new Set(items.map((item) => String(item[idColumnName])))
-    );
-
-    const client = { res };
-
-    new Promise(async (resolve) => {
-      for (const item of items) {
-        const msg = {
-          id: uuidv4(),
-          type: "existing",
-          object: item,
-          subscriptionId,
-        } satisfies Event;
-
-        client.res.write(`event: message\ndata: ${JSON.stringify(msg)}\n\n`);
-      }
-
-      resolve(undefined);
-    }).then(() => {
-      console.log("sent all existing items for subscription:", subscriptionId);
-    });
-
-    clients.set(subscriptionId, client);
-
-    req.on("close", async () => {
-      console.log("Client disconnected:", filterQuery);
-      clearInterval(heartbeat);
-      clients.delete(subscriptionId);
-      await removeSubscription(resourceName, subscriptionId)
-    });
-  });
-  setInterval(async () => {
-    for await (const { key, value } of kvScan<Event>(
-      "event::" + resourceName + "::" + handlerId + "::**"
-    )) {
-      const client = clients.get(value.subscriptionId);
-
-      if (!client) continue;
-
-      await kvDelete(key);
-
-      client.res.write(`event: message\ndata: ${JSON.stringify(value)}\n\n`);
+      throw error;
     }
-  }, 100);
+  };
 
-  // count
-  router.get("/count", async (req, res, next) => {
-    const filterQuery = req.query.filter?.toString() ?? "";
-    const filter = filterer.convert(filterQuery);
+  const parseUpdate = (data: unknown) => {
+    try {
+      return updateSchema.parse(data) as Partial<InferSelectModel<Table<TConfig>>>;
+    } catch (error) {
+      if (error instanceof ZodError) {
+        throw new ValidationError("Validation failed", formatZodError(error));
+      }
+      throw error;
+    }
+  };
 
-    const [countData] = await db
-      .select({ count: count() })
-      .from(schema)
-      .where(filter);
+  const batchConfig = { ...DEFAULT_BATCH_LIMITS, ...config.batch };
+  const hooks = config.hooks;
+  const procedures = config.procedures ?? {};
 
-    res.status(200).send({ count: countData?.count ?? 0 });
+  const rateLimitMiddleware = config.rateLimit
+    ? createRateLimiter({
+        windowMs: config.rateLimit.windowMs ?? 60000,
+        maxRequests: config.rateLimit.maxRequests ?? 100,
+      })
+    : null;
+
+  const getUser = (req: Request): UserContext | null => {
+    return (req as AuthenticatedRequest).user ?? null;
+  };
+
+  const createProcedureContext = (req: Request): ProcedureContext<TConfig> => ({
+    db,
+    schema,
+    user: getUser(req),
+    req,
   });
 
-  // create single
-  router.post("/", async (req, res, next) => {
-    const data = parseInsert(req.body);
+  const applyFilters = async (
+    req: Request,
+    operation: Operation,
+    additionalFilter?: string
+  ): Promise<SQL<unknown> | undefined> => {
+    const user = getUser(req);
+    const scope = await scopeResolver.resolve(operation, user);
 
-    const [object] = await db.insert(schema).values(data).returning();
+    const filterQuery = additionalFilter ?? req.query.filter?.toString() ?? "";
+    const combinedFilter = combineScopes(scope, filterQuery);
 
-    pushInsertsToSubscriptions(resourceName, filterer, [object]);
+    if (combinedFilter === "" || combinedFilter === "*") {
+      return filterQuery ? (filterer.convert(filterQuery) as SQL<unknown>) : undefined;
+    }
 
-    res.status(200).send(object);
-  });
+    return filterer.convert(combinedFilter) as SQL<unknown>;
+  };
 
-  // read all
-  router.get("/", async (req, res, next) => {
-    const filterQuery = req.query.filter?.toString() ?? "";
-    const filter = filterer.convert(filterQuery);
+  if (rateLimitMiddleware) {
+    router.use(rateLimitMiddleware);
+  }
 
-    const items = await db.select().from(schema).where(filter);
+  if (batchConfig.create && batchConfig.create > 0) {
+    router.post(
+      "/batch",
+      asyncHandler(async (req, res) => {
+        await scopeResolver.requirePermission("create", getUser(req));
 
-    res.status(200).send({ items });
-  });
+        const data = parseMultiInsert(req.body);
+        if (data.items.length > batchConfig.create!) {
+          throw new BatchLimitError("create", batchConfig.create!, data.items.length);
+        }
 
-  // read single
-  router.get("/:id", async (req, res, next) => {
-    const id = req.params.id;
+        const ctx = createProcedureContext(req);
 
-    const [item] = await db.select().from(schema).where(eq(config.id, id));
+        const processedItems = await Promise.all(
+          data.items.map(async (item) => {
+            const processed = await executeBeforeCreate(hooks, ctx, item);
+            return processed;
+          })
+        );
 
-    if (!item) return res.status(404).send({});
+        const created = await db.insert(schema).values(processedItems).returning();
+        const createdArray = created as unknown as Record<string, unknown>[];
 
-    res.status(200).send(item);
-  });
+        for (const item of createdArray) {
+          await executeAfterCreate(hooks, ctx, item as any);
+          recordCreate(resourceName, String(item[idColumnName]), item);
+        }
 
-  // update single (replace)
-  router.put("/:id", async (req, res, next) => {
-    const id = req.params.id;
-    const data = parseInsert(req.body);
+        await pushInsertsToSubscriptions(
+          resourceName,
+          filterer as any,
+          createdArray,
+          idColumnName
+        );
 
-    const [item] = await db
-      .update(schema)
-      .set(data)
-      .where(eq(config.id, id))
-      .returning();
+        res.json({ items: created });
+      })
+    );
+  }
 
-    if (!item) return res.status(404).send({});
+  if (batchConfig.update && batchConfig.update > 0) {
+    router.patch(
+      "/batch",
+      asyncHandler(async (req, res) => {
+        const filter = await applyFilters(req, "update");
+        const data = parseUpdate(req.body);
 
-    res.status(200).send(item);
-  });
+        const result = await db.transaction(async (tx: DrizzleTransaction) => {
+          const beforeItems = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
 
-  // update single (partial)
-  router.patch("/:id", async (req, res, next) => {
-    const id = req.params.id;
-    const data = parseUpdate(req.body);
+          if (beforeItems.length > batchConfig.update!) {
+            throw new BatchLimitError("update", batchConfig.update!, beforeItems.length);
+          }
 
-    const [item] = await db
-      .update(schema)
-      .set(data)
-      .where(eq(config.id, id))
-      .returning();
+          const ctx = createProcedureContext(req);
 
-    if (!item) return res.status(404).send({});
+          let processedData = data;
+          for (const item of beforeItems) {
+            processedData = await executeBeforeUpdate(
+              hooks,
+              ctx,
+              String(item[idColumnName]),
+              processedData
+            );
+          }
 
-    res.status(200).send(item);
-  });
+          await tx.update(schema).set(processedData).where(filter);
 
-  // delete single
-  router.delete("/:id", async (req, res, next) => {
-    const id = req.params.id;
+          // Select by IDs, not by original filter, since the update may have changed fields used in the filter
+          const ids = beforeItems.map((item) => item[idColumnName]);
+          const afterItems = (await tx.select().from(schema).where(inArray(config.id, ids as any))) as unknown as Record<string, unknown>[];
 
-    const [item] = await db.delete(schema).where(eq(config.id, id)).returning();
+          const previousMap = new Map<string, Record<string, unknown>>();
+          for (let i = 0; i < beforeItems.length; i++) {
+            const before = beforeItems[i]!;
+            const after = afterItems[i]!;
+            const id = String(before[idColumnName]);
+            previousMap.set(id, before);
+            recordUpdate(resourceName, id, after, before);
+            await executeAfterUpdate(hooks, ctx, after as any);
+          }
 
-    if (!item) return res.status(404).send({});
+          return { count: afterItems.length, items: afterItems, previousMap };
+        });
 
-    res.status(204).send({});
-  });
+        await pushUpdatesToSubscriptions(
+          resourceName,
+          filterer as any,
+          result.items,
+          idColumnName,
+          result.previousMap
+        );
+
+        res.json({ count: result.count });
+      })
+    );
+  }
+
+  if (batchConfig.delete && batchConfig.delete > 0) {
+    router.delete(
+      "/batch",
+      asyncHandler(async (req, res) => {
+        const filter = await applyFilters(req, "delete");
+
+        const result = await db.transaction(async (tx: DrizzleTransaction) => {
+          const items = (await tx.select().from(schema).where(filter)) as unknown as Record<string, unknown>[];
+
+          if (items.length > batchConfig.delete!) {
+            throw new BatchLimitError("delete", batchConfig.delete!, items.length);
+          }
+
+          const ctx = createProcedureContext(req);
+
+          for (const item of items) {
+            await executeBeforeDelete(hooks, ctx, String(item[idColumnName]));
+          }
+
+          await tx.delete(schema).where(filter);
+
+          const deletedIds: string[] = [];
+          for (const item of items) {
+            const id = String(item[idColumnName]);
+            deletedIds.push(id);
+            recordDelete(resourceName, id, item);
+            await executeAfterDelete(hooks, ctx, item as any);
+          }
+
+          return { count: items.length, deletedIds };
+        });
+
+        await pushDeletesToSubscriptions(resourceName, result.deletedIds);
+
+        res.json({ count: result.count });
+      })
+    );
+  }
+
+  let eventPollInterval: NodeJS.Timeout | null = null;
+  let activeClients = 0;
+
+  const startEventPolling = () => {
+    if (eventPollInterval) return;
+
+    eventPollInterval = setInterval(async () => {
+      if (!isHandlerConnected(handlerId)) {
+        stopEventPolling();
+      }
+    }, 30000);
+  };
+
+  const stopEventPolling = () => {
+    if (eventPollInterval) {
+      clearInterval(eventPollInterval);
+      eventPollInterval = null;
+    }
+  };
+
+  router.get(
+    "/subscribe",
+    asyncHandler(async (req, res) => {
+      const user = getUser(req);
+      const scope = await scopeResolver.resolve("subscribe", user);
+      const filterQuery = req.query.filter?.toString() ?? "";
+      const resumeFrom = req.query.resumeFrom
+        ? parseInt(req.query.resumeFrom.toString(), 10)
+        : undefined;
+
+      res.set({
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      res.flushHeaders?.();
+
+      registerHandler(handlerId, res);
+      activeClients++;
+      startEventPolling();
+
+      const currentSeq = changelog.getCurrentSequence();
+      res.write(`event: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
+
+      const heartbeat = setInterval(() => {
+        if (res.writableEnded) {
+          clearInterval(heartbeat);
+          return;
+        }
+        res.write(`: ping\n\n`);
+      }, 20000);
+
+      const subscriptionId = await createSubscription({
+        resource: resourceName,
+        filter: filterQuery,
+        handlerId,
+        authId: user?.id ?? null,
+        scopeFilter: scope.toString() !== "*" ? scope.toString() : undefined,
+        authExpiresAt: user?.sessionExpiresAt,
+      });
+
+      if (resumeFrom !== undefined) {
+        if (await changelog.needsInvalidation(resumeFrom)) {
+          await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
+        }
+      } else {
+        const combinedFilter = combineScopes(scope, filterQuery);
+        const filter = combinedFilter && combinedFilter !== "*"
+          ? (filterer.convert(combinedFilter) as SQL<unknown>)
+          : undefined;
+
+        const items = await db.select().from(schema).where(filter);
+        await sendExistingItems(
+          subscriptionId,
+          items as Record<string, unknown>[],
+          idColumnName
+        );
+      }
+
+      req.on("close", async () => {
+        clearInterval(heartbeat);
+        activeClients--;
+
+        if (activeClients === 0) {
+          stopEventPolling();
+          unregisterHandler(handlerId);
+        }
+
+        await removeSubscription(subscriptionId);
+      });
+
+      req.on("error", () => {
+        clearInterval(heartbeat);
+      });
+    })
+  );
+
+  router.get(
+    "/aggregate",
+    asyncHandler(async (req, res) => {
+      const filter = await applyFilters(req, "read");
+      const params = parseAggregationParams(req.query as Record<string, unknown>);
+
+      const { groupByColumns, aggregateColumns } = buildAggregationSelections(
+        schema,
+        params
+      );
+
+      const columns = getTableColumns(schema);
+      const selectObj: Record<string, unknown> = {
+        ...groupByColumns,
+        ...aggregateColumns,
+      };
+
+      let query = db.select(selectObj as any).from(schema);
+
+      if (filter) {
+        query = query.where(filter) as any;
+      }
+
+      if (params.groupBy.length > 0) {
+        const groupByCols = params.groupBy.map((f) => columns[f]).filter(Boolean);
+        query = (query as any).groupBy(...groupByCols);
+      }
+
+      const results = await query;
+      const transformed = transformAggregationResults(
+        results as Record<string, unknown>[],
+        params
+      );
+
+      res.json(transformed);
+    })
+  );
+
+  router.get(
+    "/count",
+    asyncHandler(async (req, res) => {
+      const filter = await applyFilters(req, "read");
+
+      const [countData] = await db
+        .select({ count: count() })
+        .from(schema)
+        .where(filter);
+
+      res.json({ count: countData?.count ?? 0 });
+    })
+  );
+
+  for (const [name, procedure] of Object.entries(procedures)) {
+    router.post(
+      `/rpc/${name}`,
+      asyncHandler(async (req, res) => {
+        const ctx = createProcedureContext(req);
+        const result = await executeProcedure(procedure, ctx, req.body);
+        res.json({ data: result });
+      })
+    );
+  }
+
+  router.post(
+    "/",
+    asyncHandler(async (req, res) => {
+      await scopeResolver.requirePermission("create", getUser(req));
+
+      const ctx = createProcedureContext(req);
+      let data = parseInsert(req.body);
+
+      data = await executeBeforeCreate(hooks, ctx, data);
+
+      const insertResult = await db.insert(schema).values(data).returning();
+      const created = (insertResult as any[])[0];
+      const createdObj = created as Record<string, unknown>;
+
+      await executeAfterCreate(hooks, ctx, created);
+
+      recordCreate(resourceName, String(createdObj[idColumnName]), createdObj);
+
+      await pushInsertsToSubscriptions(
+        resourceName,
+        filterer as any,
+        [createdObj],
+        idColumnName
+      );
+
+      res.status(201).json(created);
+    })
+  );
+
+  router.get(
+    "/",
+    asyncHandler(async (req, res) => {
+      const filter = await applyFilters(req, "read");
+      const paginationParams = pagination.parseParams(req.query as Record<string, unknown>);
+      const selectFields = parseSelect(req.query.select?.toString());
+      const includeTotalCount = req.query.totalCount === "true";
+
+      const orderByFields = parseOrderBy(paginationParams.orderBy);
+
+      let query = db.select().from(schema);
+
+      if (filter) {
+        query = query.where(filter) as any;
+      }
+
+      if (paginationParams.cursor) {
+        const cursorData = decodeCursor(paginationParams.cursor);
+        if (cursorData) {
+          const cursorCondition = pagination.buildCursorCondition(
+            cursorData,
+            orderByFields
+          );
+          if (cursorCondition) {
+            query = query.where(
+              filter ? and(filter, cursorCondition) : cursorCondition
+            ) as any;
+          }
+        }
+      }
+
+      const orderByClauses = pagination.buildOrderBy(orderByFields);
+      if (orderByClauses.length > 0) {
+        query = (query as any).orderBy(...orderByClauses);
+      }
+
+      query = query.limit(paginationParams.limit + 1) as any;
+
+      const items = await query;
+
+      let totalCount: number | undefined;
+      if (includeTotalCount) {
+        const [countResult] = await db
+          .select({ count: count() })
+          .from(schema)
+          .where(filter);
+        totalCount = countResult?.count ?? 0;
+      }
+
+      const result = pagination.processResults(
+        items as Record<string, unknown>[],
+        paginationParams.limit,
+        idColumnName,
+        orderByFields,
+        totalCount
+      );
+
+      if (selectFields) {
+        result.items = applyProjection(result.items, selectFields) as any;
+      }
+
+      res.json(result);
+    })
+  );
+
+  router.get(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const id = req.params.id as string;
+      const filter = await applyFilters(req, "read", `${idColumnName}=="${id}"`);
+      const selectFields = parseSelect(req.query.select?.toString());
+
+      const selectResult = await db.select().from(schema).where(filter);
+      const item = (selectResult as any[])[0];
+
+      if (!item) {
+        throw new NotFoundError(resourceName, id);
+      }
+
+      let result = item;
+      if (selectFields) {
+        result = applyProjection([item], selectFields)[0] as typeof item;
+      }
+
+      res.json(result);
+    })
+  );
+
+  router.put(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const id = req.params.id as string;
+      const filter = await applyFilters(req, "update", `${idColumnName}=="${id}"`);
+
+      const existingResult = await db.select().from(schema).where(filter);
+      const existing = (existingResult as any[])[0];
+      if (!existing) {
+        throw new NotFoundError(resourceName, id);
+      }
+
+      const ctx = createProcedureContext(req);
+      let data = parseInsert(req.body);
+
+      const updateData = await executeBeforeUpdate(hooks, ctx, id, data as any);
+
+      const updateResult = await db
+        .update(schema)
+        .set(updateData as any)
+        .where(filter)
+        .returning();
+      const updated = (updateResult as any[])[0];
+
+      await executeAfterUpdate(hooks, ctx, updated);
+
+      recordUpdate(resourceName, id, updated, existing);
+
+      const previousMap = new Map<string, Record<string, unknown>>();
+      previousMap.set(id, existing);
+      await pushUpdatesToSubscriptions(
+        resourceName,
+        filterer as any,
+        [updated],
+        idColumnName,
+        previousMap
+      );
+
+      res.json(updated);
+    })
+  );
+
+  router.patch(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const id = req.params.id as string;
+      const filter = await applyFilters(req, "update", `${idColumnName}=="${id}"`);
+
+      const existingResult = await db.select().from(schema).where(filter);
+      const existing = (existingResult as any[])[0];
+      if (!existing) {
+        throw new NotFoundError(resourceName, id);
+      }
+
+      const ctx = createProcedureContext(req);
+      let data = parseUpdate(req.body);
+
+      data = await executeBeforeUpdate(hooks, ctx, id, data);
+
+      const updateResult = await db
+        .update(schema)
+        .set(data as any)
+        .where(filter)
+        .returning();
+      const updated = (updateResult as any[])[0];
+
+      await executeAfterUpdate(hooks, ctx, updated);
+
+      recordUpdate(resourceName, id, updated, existing);
+
+      const previousMap = new Map<string, Record<string, unknown>>();
+      previousMap.set(id, existing);
+      await pushUpdatesToSubscriptions(
+        resourceName,
+        filterer as any,
+        [updated],
+        idColumnName,
+        previousMap
+      );
+
+      res.json(updated);
+    })
+  );
+
+  router.delete(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const id = req.params.id as string;
+      const filter = await applyFilters(req, "delete", `${idColumnName}=="${id}"`);
+
+      const existingResult = await db.select().from(schema).where(filter);
+      const existing = (existingResult as any[])[0];
+      if (!existing) {
+        throw new NotFoundError(resourceName, id);
+      }
+
+      const ctx = createProcedureContext(req);
+
+      await executeBeforeDelete(hooks, ctx, id);
+
+      await db.delete(schema).where(filter);
+
+      await executeAfterDelete(hooks, ctx, existing);
+
+      recordDelete(resourceName, id, existing);
+
+      await pushDeletesToSubscriptions(resourceName, [id]);
+
+      res.status(204).send();
+    })
+  );
 
   return router;
 };
+
+export type { ResourceConfig, CustomOperator, ProcedureDefinition, LifecycleHooks };

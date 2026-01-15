@@ -1,182 +1,677 @@
-import z from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { Filter } from "./filter";
+import { Response } from "express";
+import { Filter, CompiledFilterExpression } from "./filter";
+import { changelog } from "./changelog";
+import {
+  Subscription,
+  SubscriptionEvent,
+  AddedEvent,
+  ChangedEvent,
+  RemovedEvent,
+  InvalidateEvent,
+  ExistingEvent,
+  ChangelogEntry,
+} from "./types";
+import { getGlobalKV, hasGlobalKV, KVAdapter } from "../kv";
 
-// todo: use redis here
+// Local process state (cannot be shared across processes)
+// HTTP handlers must stay in memory on the process that owns the connection
+const localHandlers = new Map<string, Response>();
 
-const inMemoryKv = new Map<string, { value: string; expiry: Date | null }>();
+// Local cache for compiled filters (each process can have its own cache)
+const compiledFiltersCache = new Map<string, CompiledFilterExpression>();
 
-export const kvSet = async <T>(key: string, value: T): Promise<void> => {
-  inMemoryKv.set(key, { value: JSON.stringify(value), expiry: null });
-};
+// Track which handler IDs are local to this process
+const localHandlerIds = new Set<string>();
 
-export const kvSetEx = async <T>(
-  key: string,
-  value: T,
-  expiry: number
-): Promise<void> => {
-  const expiryDate = new Date(Date.now() + expiry * 1000);
-  inMemoryKv.set(key, { value: JSON.stringify(value), expiry: expiryDate });
-};
+// KV keys
+const SUBSCRIPTIONS_HASH = "concave:subscriptions";
+const SUBSCRIPTION_OBJECTS_PREFIX = "concave:sub:objects:";
+const SUBSCRIPTION_SEQ_PREFIX = "concave:sub:seq:";
+const EVENTS_CHANNEL = "concave:events";
 
-export const kvGet = async <T>(key: string): Promise<T | null> => {
-  const { value, expiry } = inMemoryKv.get(key) ?? {
-    value: null,
-    expiry: null,
-  };
-  if (!value) return null;
-  if (expiry && expiry < new Date()) {
-    inMemoryKv.delete(key);
-    return null;
-  }
-  return JSON.parse(value) as T;
-};
-
-export const kvDelete = async (key: string): Promise<void> => {
-  inMemoryKv.delete(key);
-};
-
-export const kvDeleteAll = async (pattern: string): Promise<void> => {
-  const regex = new RegExp(
-    "^" +
-      pattern.replace(/\*\*|\*/g, (m) => (m === "**" ? ".*" : "[^:]*")) +
-      "$"
-  );
-
-  for (const key of inMemoryKv.keys()) {
-    if (regex.test(key)) {
-      inMemoryKv.delete(key);
-    }
-  }
-};
-
-export async function* kvScan<T>(pattern: string) {
-  const regex = new RegExp(
-    "^" +
-      pattern.replace(/\*\*|\*/g, (m) => (m === "**" ? ".*" : "[^:]*")) +
-      "$"
-  );
-
-  for (const [key, { value }] of inMemoryKv.entries()) {
-    if (regex.test(key)) {
-      yield { key: key, value: JSON.parse(value) as T };
-    }
-  }
+interface SerializedSubscription {
+  id: string;
+  createdAt: string;
+  resource: string;
+  filter: string;
+  authId: string | null;
+  handlerId: string;
+  lastSeq: number;
+  scopeFilter?: string;
+  authExpiresAt?: string | null;
 }
 
-const subscriptionSchema = z.object({
-  id: z.uuid(),
-  createdAt: z.date(),
-  resource: z.string(), // name of the resource
-  filter: z.string(), // filters as inputted to filter.ts
-  authId: z.string().nullable(), // id of the user who created the subscription
-  handlerId: z.string(), // id of the handler to send events to
-  relevantObjectIds: z.set(z.string()),
-});
+interface BroadcastEvent {
+  type: "added" | "changed" | "removed" | "invalidate";
+  subscriptionId: string;
+  event: SubscriptionEvent;
+}
 
-type Subscription = z.infer<typeof subscriptionSchema>;
+const serializeSubscription = (sub: Subscription): string => {
+  const serialized: SerializedSubscription = {
+    id: sub.id,
+    createdAt: sub.createdAt.toISOString(),
+    resource: sub.resource,
+    filter: sub.filter,
+    authId: sub.authId,
+    handlerId: sub.handlerId,
+    lastSeq: sub.lastSeq,
+    scopeFilter: sub.scopeFilter,
+    authExpiresAt: sub.authExpiresAt?.toISOString() ?? null,
+  };
+  return JSON.stringify(serialized);
+};
 
-const eventSchema = z.union([
-  z.object({
-    id: z.uuid(),
-    subscriptionId: z.uuid(),
-    type: z.literal("added"),
-    object: z.any(),
-  }),
-  z.object({
-    id: z.uuid(),
-    subscriptionId: z.uuid(),
-    type: z.literal("existing"),
-    object: z.any(),
-  }),
-]);
+const deserializeSubscription = (data: string): Subscription => {
+  const parsed: SerializedSubscription = JSON.parse(data);
+  return {
+    id: parsed.id,
+    createdAt: new Date(parsed.createdAt),
+    resource: parsed.resource,
+    filter: parsed.filter,
+    authId: parsed.authId,
+    handlerId: parsed.handlerId,
+    relevantObjectIds: new Set(), // Will be loaded separately
+    lastSeq: parsed.lastSeq,
+    scopeFilter: parsed.scopeFilter,
+    authExpiresAt: parsed.authExpiresAt ? new Date(parsed.authExpiresAt) : null,
+  };
+};
 
-export type Event = z.infer<typeof eventSchema>;
+const getKV = (): KVAdapter | null => {
+  return hasGlobalKV() ? getGlobalKV() : null;
+};
+
+// Load relevant object IDs from KV
+const loadRelevantObjects = async (subscriptionId: string): Promise<Set<string>> => {
+  const kv = getKV();
+  if (!kv) return new Set();
+
+  const members = await kv.smembers(`${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`);
+  return new Set(members);
+};
+
+// Save a relevant object ID to KV (exported for testing)
+export const addRelevantObject = async (subscriptionId: string, objectId: string): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  await kv.sadd(`${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`, objectId);
+};
+
+// Remove a relevant object ID from KV
+const removeRelevantObject = async (subscriptionId: string, objectId: string): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  await kv.srem(`${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`, objectId);
+};
+
+// Check if an object is relevant to a subscription
+const isObjectRelevant = async (subscriptionId: string, objectId: string): Promise<boolean> => {
+  const kv = getKV();
+  if (!kv) return false;
+
+  return kv.sismember(`${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`, objectId);
+};
+
+export interface CreateSubscriptionOptions {
+  resource: string;
+  filter: string;
+  handlerId: string;
+  authId: string | null;
+  scopeFilter?: string;
+  authExpiresAt?: Date | null;
+}
 
 export const createSubscription = async (
-  resource: string,
-  filter: string,
-  handlerId: string,
-  authId: string | null,
-  relevantObjectIds: Set<string>
-) => {
+  options: CreateSubscriptionOptions
+): Promise<string> => {
   const subscriptionId = uuidv4();
-  const createdAt = new Date();
-  const subscription = {
+  const subscription: Subscription = {
     id: subscriptionId,
-    createdAt,
-    resource,
-    filter,
-    authId,
-    handlerId,
-    relevantObjectIds,
-  } satisfies Subscription;
+    createdAt: new Date(),
+    resource: options.resource,
+    filter: options.filter,
+    authId: options.authId,
+    handlerId: options.handlerId,
+    relevantObjectIds: new Set(),
+    lastSeq: await changelog.getCurrentSequence(),
+    scopeFilter: options.scopeFilter,
+    authExpiresAt: options.authExpiresAt,
+  };
 
-  await kvSet(
-    `subscription::${resource}::${handlerId}::${authId ?? "null"}::${subscriptionId}`,
-    subscription
-  );
+  const kv = getKV();
+  if (kv) {
+    await kv.hset(SUBSCRIPTIONS_HASH, subscriptionId, serializeSubscription(subscription));
+    await kv.set(`${SUBSCRIPTION_SEQ_PREFIX}${subscriptionId}`, "0");
+  }
 
   return subscriptionId;
 };
 
-export const removeSubscription = async (
-  resource: string,
-  subscriptionId: string
-) => {
-  for await (const { key, value } of kvScan<Subscription>(
-    "subscription::" + resource + "::**::" + subscriptionId
-  )) {
-    if (value.id === subscriptionId) {
-      await kvDelete(key);
+export const removeSubscription = async (subscriptionId: string): Promise<void> => {
+  compiledFiltersCache.delete(subscriptionId);
 
-      await kvDeleteAll(
-        "event::" +
-          resource +
-          "::" +
-          value.handlerId +
-          "::" +
-          (value.authId ?? "null") +
-          "::" +
-          subscriptionId +
-          "::**"
-      );
-      return;
+  const kv = getKV();
+  if (kv) {
+    await kv.hdel(SUBSCRIPTIONS_HASH, subscriptionId);
+    await kv.del(
+      `${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`,
+      `${SUBSCRIPTION_SEQ_PREFIX}${subscriptionId}`
+    );
+  }
+};
+
+export const getSubscription = async (subscriptionId: string): Promise<Subscription | undefined> => {
+  const kv = getKV();
+  if (!kv) return undefined;
+
+  const data = await kv.hget(SUBSCRIPTIONS_HASH, subscriptionId);
+  if (!data) return undefined;
+
+  const subscription = deserializeSubscription(data);
+  subscription.relevantObjectIds = await loadRelevantObjects(subscriptionId);
+  return subscription;
+};
+
+export const registerHandler = (handlerId: string, res: Response): void => {
+  localHandlers.set(handlerId, res);
+  localHandlerIds.add(handlerId);
+};
+
+export const unregisterHandler = async (handlerId: string): Promise<void> => {
+  localHandlers.delete(handlerId);
+  localHandlerIds.delete(handlerId);
+
+  const kv = getKV();
+  if (!kv) return;
+
+  // Get all subscriptions and remove those belonging to this handler
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+  for (const [subId, data] of Object.entries(allSubs)) {
+    const sub = deserializeSubscription(data);
+    if (sub.handlerId === handlerId) {
+      await removeSubscription(subId);
     }
   }
 };
 
-// todo: auth / scope checking
-export const pushInsertsToSubscriptions = async (
+const getNextSeq = async (subscriptionId: string): Promise<number> => {
+  const kv = getKV();
+  if (!kv) return Date.now(); // Fallback to timestamp
+
+  return kv.incr(`${SUBSCRIPTION_SEQ_PREFIX}${subscriptionId}`);
+};
+
+const getCompiledFilter = (
+  subscription: Subscription,
+  filterFactory: Filter
+): CompiledFilterExpression => {
+  const cacheKey = subscription.id;
+  let compiled = compiledFiltersCache.get(cacheKey);
+
+  if (!compiled) {
+    let filterExpr = subscription.filter;
+    if (subscription.scopeFilter) {
+      filterExpr = filterExpr
+        ? `(${filterExpr});(${subscription.scopeFilter})`
+        : subscription.scopeFilter;
+    }
+    compiled = filterFactory.compile(filterExpr);
+    compiledFiltersCache.set(cacheKey, compiled);
+  }
+
+  return compiled;
+};
+
+const sendEvent = <T extends SubscriptionEvent>(
+  handlerId: string,
+  event: T
+): boolean => {
+  // Only send if handler is local to this process
+  if (!localHandlerIds.has(handlerId)) {
+    return false;
+  }
+
+  const handler = localHandlers.get(handlerId);
+  if (!handler || handler.writableEnded) {
+    return false;
+  }
+
+  try {
+    handler.write(`data: ${JSON.stringify(event)}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Broadcast event to all processes via pub/sub
+const broadcastEvent = async (event: BroadcastEvent): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  await kv.publish(EVENTS_CHANNEL, JSON.stringify(event));
+};
+
+// Initialize event subscription for this process
+export const initializeEventSubscription = async (): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  await kv.subscribe(EVENTS_CHANNEL, async (message: string) => {
+    try {
+      const broadcast: BroadcastEvent = JSON.parse(message);
+      const subscription = await getSubscription(broadcast.subscriptionId);
+      if (!subscription) return;
+
+      // Only process if this handler is local
+      if (localHandlerIds.has(subscription.handlerId)) {
+        sendEvent(subscription.handlerId, broadcast.event);
+      }
+    } catch {
+      // Ignore malformed messages
+    }
+  });
+};
+
+export const sendExistingItems = async <T extends Record<string, unknown>>(
+  subscriptionId: string,
+  items: T[],
+  idColumn: string
+): Promise<void> => {
+  const subscription = await getSubscription(subscriptionId);
+  if (!subscription) return;
+
+  for (const item of items) {
+    const id = String(item[idColumn]);
+    await addRelevantObject(subscriptionId, id);
+
+    const event: ExistingEvent<T> = {
+      id: uuidv4(),
+      subscriptionId,
+      seq: await getNextSeq(subscriptionId),
+      timestamp: Date.now(),
+      type: "existing",
+      object: item,
+    };
+
+    // Send directly if local, otherwise broadcast
+    if (localHandlerIds.has(subscription.handlerId)) {
+      sendEvent(subscription.handlerId, event);
+    } else {
+      await broadcastEvent({ type: "added", subscriptionId, event });
+    }
+  }
+};
+
+export const pushInsertsToSubscriptions = async <T extends Record<string, unknown>>(
   resource: string,
-  filter: Filter,
-  items: any[]
-) => {
-  for await (const { key, value } of kvScan<Subscription>(
-    "subscription::" + resource + "::**"
-  )) {
-    const compiledFilter = filter.compile(value.filter);
+  filterFactory: Filter,
+  items: T[],
+  idColumn: string
+): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+
+  for (const [subId, data] of Object.entries(allSubs)) {
+    const subscription = deserializeSubscription(data);
+    if (subscription.resource !== resource) continue;
+
+    if (
+      subscription.authExpiresAt &&
+      subscription.authExpiresAt < new Date()
+    ) {
+      await sendInvalidateEvent(subId, "Authentication expired");
+      continue;
+    }
+
+    const compiled = getCompiledFilter(subscription, filterFactory);
 
     for (const item of items) {
-      const result = compiledFilter.execute(item);
+      const matches = compiled.execute(item);
+      if (!matches) continue;
 
-      if (!result) continue;
-      const eventId = uuidv4();
+      const id = String(item[idColumn]);
+      await addRelevantObject(subId, id);
 
-      const event = {
-        id: eventId,
-        subscriptionId: value.id,
+      const event: AddedEvent<T> = {
+        id: uuidv4(),
+        subscriptionId: subId,
+        seq: await getNextSeq(subId),
+        timestamp: Date.now(),
         type: "added",
         object: item,
-      } satisfies Event;
+      };
 
-      await kvSetEx(
-        `event::${resource}::${value.handlerId}::${value.authId ?? "null"}::${value.id}::${eventId}`,
-        event,
-        60
-      );
+      // Try local first, then broadcast
+      if (!sendEvent(subscription.handlerId, event)) {
+        await broadcastEvent({ type: "added", subscriptionId: subId, event });
+      }
     }
   }
 };
 
-export const pushUpdatesToSubscriptions = async (resource: string, filter: Filter, items: any[]) => {}
+export const pushUpdatesToSubscriptions = async <T extends Record<string, unknown>>(
+  resource: string,
+  filterFactory: Filter,
+  items: T[],
+  idColumn: string,
+  previousItems?: Map<string, T>
+): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+
+  for (const [subId, data] of Object.entries(allSubs)) {
+    const subscription = deserializeSubscription(data);
+    if (subscription.resource !== resource) continue;
+
+    if (
+      subscription.authExpiresAt &&
+      subscription.authExpiresAt < new Date()
+    ) {
+      await sendInvalidateEvent(subId, "Authentication expired");
+      continue;
+    }
+
+    const compiled = getCompiledFilter(subscription, filterFactory);
+
+    for (const item of items) {
+      const id = String(item[idColumn]);
+      const wasRelevant = await isObjectRelevant(subId, id);
+      const isRelevant = compiled.execute(item);
+
+      if (isRelevant && !wasRelevant) {
+        await addRelevantObject(subId, id);
+
+        const event: AddedEvent<T> = {
+          id: uuidv4(),
+          subscriptionId: subId,
+          seq: await getNextSeq(subId),
+          timestamp: Date.now(),
+          type: "added",
+          object: item,
+        };
+
+        if (!sendEvent(subscription.handlerId, event)) {
+          await broadcastEvent({ type: "added", subscriptionId: subId, event });
+        }
+      } else if (isRelevant && wasRelevant) {
+        const previousObjectId = previousItems?.get(id)
+          ? String(previousItems.get(id)![idColumn])
+          : undefined;
+
+        const event: ChangedEvent<T> = {
+          id: uuidv4(),
+          subscriptionId: subId,
+          seq: await getNextSeq(subId),
+          timestamp: Date.now(),
+          type: "changed",
+          object: item,
+          previousObjectId,
+        };
+
+        if (!sendEvent(subscription.handlerId, event)) {
+          await broadcastEvent({ type: "changed", subscriptionId: subId, event });
+        }
+      } else if (!isRelevant && wasRelevant) {
+        await removeRelevantObject(subId, id);
+
+        const event: RemovedEvent = {
+          id: uuidv4(),
+          subscriptionId: subId,
+          seq: await getNextSeq(subId),
+          timestamp: Date.now(),
+          type: "removed",
+          objectId: id,
+        };
+
+        if (!sendEvent(subscription.handlerId, event)) {
+          await broadcastEvent({ type: "removed", subscriptionId: subId, event });
+        }
+      }
+    }
+  }
+};
+
+export const pushDeletesToSubscriptions = async (
+  resource: string,
+  deletedIds: string[]
+): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+
+  for (const [subId, data] of Object.entries(allSubs)) {
+    const subscription = deserializeSubscription(data);
+    if (subscription.resource !== resource) continue;
+
+    for (const id of deletedIds) {
+      const wasRelevant = await isObjectRelevant(subId, id);
+      if (!wasRelevant) continue;
+
+      await removeRelevantObject(subId, id);
+
+      const event: RemovedEvent = {
+        id: uuidv4(),
+        subscriptionId: subId,
+        seq: await getNextSeq(subId),
+        timestamp: Date.now(),
+        type: "removed",
+        objectId: id,
+      };
+
+      if (!sendEvent(subscription.handlerId, event)) {
+        await broadcastEvent({ type: "removed", subscriptionId: subId, event });
+      }
+    }
+  }
+};
+
+export const sendInvalidateEvent = async (
+  subscriptionId: string,
+  reason?: string
+): Promise<void> => {
+  const subscription = await getSubscription(subscriptionId);
+  if (!subscription) return;
+
+  const event: InvalidateEvent = {
+    id: uuidv4(),
+    subscriptionId,
+    seq: await getNextSeq(subscriptionId),
+    timestamp: Date.now(),
+    type: "invalidate",
+    reason,
+  };
+
+  if (!sendEvent(subscription.handlerId, event)) {
+    await broadcastEvent({ type: "invalidate", subscriptionId, event });
+  }
+};
+
+export const processChangelogEntries = async (
+  entries: ChangelogEntry[],
+  filterFactory: Filter,
+  idColumn: string
+): Promise<void> => {
+  for (const entry of entries) {
+    switch (entry.type) {
+      case "create":
+        if (entry.object) {
+          await pushInsertsToSubscriptions(
+            entry.resource,
+            filterFactory,
+            [entry.object],
+            idColumn
+          );
+        }
+        break;
+
+      case "update":
+        if (entry.object) {
+          const previousMap = new Map<string, Record<string, unknown>>();
+          if (entry.previousObject) {
+            previousMap.set(entry.objectId, entry.previousObject);
+          }
+          await pushUpdatesToSubscriptions(
+            entry.resource,
+            filterFactory,
+            [entry.object],
+            idColumn,
+            previousMap
+          );
+        }
+        break;
+
+      case "delete":
+        await pushDeletesToSubscriptions(entry.resource, [entry.objectId]);
+        break;
+    }
+  }
+};
+
+export const getSubscriptionsForResource = async (resource: string): Promise<Subscription[]> => {
+  const kv = getKV();
+  if (!kv) return [];
+
+  const result: Subscription[] = [];
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+
+  for (const data of Object.values(allSubs)) {
+    const subscription = deserializeSubscription(data);
+    if (subscription.resource === resource) {
+      subscription.relevantObjectIds = await loadRelevantObjects(subscription.id);
+      result.push(subscription);
+    }
+  }
+
+  return result;
+};
+
+export const updateSubscriptionSeq = async (
+  subscriptionId: string,
+  seq: number
+): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  const data = await kv.hget(SUBSCRIPTIONS_HASH, subscriptionId);
+  if (!data) return;
+
+  const subscription = deserializeSubscription(data);
+  subscription.lastSeq = seq;
+  await kv.hset(SUBSCRIPTIONS_HASH, subscriptionId, serializeSubscription(subscription));
+};
+
+export const getCatchupEvents = async (
+  subscriptionId: string,
+  sinceSeq: number
+): Promise<ChangelogEntry[] | null> => {
+  const subscription = await getSubscription(subscriptionId);
+  if (!subscription) return null;
+
+  if (await changelog.needsInvalidation(sinceSeq)) {
+    return null;
+  }
+
+  return await changelog.getEntriesSince(subscription.resource, sinceSeq);
+};
+
+export const isHandlerConnected = (handlerId: string): boolean => {
+  // Only check local handlers
+  if (!localHandlerIds.has(handlerId)) {
+    return false;
+  }
+
+  const handler = localHandlers.get(handlerId);
+  return handler !== undefined && !handler.writableEnded;
+};
+
+export const getHandlerSubscriptions = async (handlerId: string): Promise<string[]> => {
+  const kv = getKV();
+  if (!kv) return [];
+
+  const result: string[] = [];
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+
+  for (const [id, data] of Object.entries(allSubs)) {
+    const sub = deserializeSubscription(data);
+    if (sub.handlerId === handlerId) {
+      result.push(id);
+    }
+  }
+
+  return result;
+};
+
+export const clearRelevantObjects = async (subscriptionId: string): Promise<void> => {
+  const kv = getKV();
+  if (!kv) return;
+
+  await kv.del(`${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`);
+};
+
+export const invalidateFilterCache = (subscriptionId: string): void => {
+  compiledFiltersCache.delete(subscriptionId);
+};
+
+export const getSubscriptionStats = async (): Promise<{
+  totalSubscriptions: number;
+  totalHandlers: number;
+  subscriptionsByResource: Record<string, number>;
+}> => {
+  const kv = getKV();
+  if (!kv) {
+    return {
+      totalSubscriptions: 0,
+      totalHandlers: localHandlers.size,
+      subscriptionsByResource: {},
+    };
+  }
+
+  const subscriptionsByResource: Record<string, number> = {};
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+
+  for (const data of Object.values(allSubs)) {
+    const sub = deserializeSubscription(data);
+    subscriptionsByResource[sub.resource] =
+      (subscriptionsByResource[sub.resource] ?? 0) + 1;
+  }
+
+  return {
+    totalSubscriptions: Object.keys(allSubs).length,
+    totalHandlers: localHandlers.size,
+    subscriptionsByResource,
+  };
+};
+
+export const clearAllSubscriptions = async (): Promise<void> => {
+  compiledFiltersCache.clear();
+  localHandlers.clear();
+  localHandlerIds.clear();
+
+  const kv = getKV();
+  if (!kv) return;
+
+  // Get all subscription IDs to clear their related keys
+  const allSubs = await kv.hgetall(SUBSCRIPTIONS_HASH);
+  const keysToDelete: string[] = [SUBSCRIPTIONS_HASH];
+
+  for (const subId of Object.keys(allSubs)) {
+    keysToDelete.push(
+      `${SUBSCRIPTION_OBJECTS_PREFIX}${subId}`,
+      `${SUBSCRIPTION_SEQ_PREFIX}${subId}`
+    );
+  }
+
+  if (keysToDelete.length > 0) {
+    await kv.del(...keysToDelete);
+  }
+};
