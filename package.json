@@ -103,7 +103,7 @@
     "offline-first"
   ],
   "author": "kahveciderin",
-  "license": "MIT",
+  "license": "---",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kahveciderin/concave.git"
