@@ -78,6 +78,7 @@ export interface SessionStore {
   set(sessionId: string, data: SessionData, ttlMs: number): Promise<void>;
   delete(sessionId: string): Promise<void>;
   touch(sessionId: string, ttlMs: number): Promise<void>;
+  getAll?(): Promise<SessionData[]>;
 }
 
 export class InMemorySessionStore implements SessionStore {
@@ -118,6 +119,11 @@ export class InMemorySessionStore implements SessionStore {
         this.sessions.delete(id);
       }
     }
+  }
+
+  async getAll(): Promise<SessionData[]> {
+    this.cleanup();
+    return Array.from(this.sessions.values()).map(entry => entry.data);
   }
 }
 

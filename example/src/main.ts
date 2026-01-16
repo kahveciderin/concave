@@ -15,6 +15,8 @@ import {
   createAdminUI,
   registerResource,
   createConcaveRouter,
+  createPassportAdapter,
+  useAuth,
   UnauthorizedError,
   ValidationError,
   changelog,
@@ -28,7 +30,6 @@ import { db } from "./db/db";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Initialize in-memory KV store for subscriptions
 await initializeKV({ type: "memory", prefix: "todo-app" });
 
 const app = express();
@@ -46,101 +47,49 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(observabilityMiddleware({ metrics: metricsCollector }));
 
-// Session store (in-memory for demo, use Redis in production)
-const sessions = new Map<string, { userId: string; expiresAt: Date }>();
-
-// Auth middleware
-app.use((req: any, res, next) => {
-  const token = req.cookies?.session || req.headers.authorization?.replace("Bearer ", "");
-  if (token && sessions.has(token)) {
-    const session = sessions.get(token)!;
-    if (session.expiresAt > new Date()) {
-      req.user = { id: session.userId };
-    } else {
-      sessions.delete(token);
-    }
-  }
-  next();
+const authAdapter = createPassportAdapter({
+  getUserById: async (id) => {
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, id)).limit(1);
+    return user ?? null;
+  },
 });
 
-// Auth routes
-app.post("/api/auth/signup", async (req, res, next) => {
-  try {
-    const { email, name, password } = req.body;
-    if (!email || !name || !password) {
-      throw new ValidationError("Email, name, and password are required");
-    }
+const { router: authRouter, middleware: authMiddleware } = useAuth({
+  adapter: authAdapter,
+  login: {
+    validateCredentials: async (email, password) => {
+      const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
+      if (!user || user.passwordHash !== hashPassword(password)) {
+        return null;
+      }
+      return { id: user.id, email: user.email, name: user.name };
+    },
+  },
+  signup: {
+    createUser: async ({ email, password, name }) => {
+      const existing = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
+      if (existing.length > 0) {
+        throw new ValidationError("Email already registered");
+      }
 
-    const existing = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
-    if (existing.length > 0) {
-      throw new ValidationError("Email already registered");
-    }
+      const id = randomUUID();
+      const [user] = await db.insert(usersTable).values({
+        id,
+        email,
+        name: name ?? "User",
+        passwordHash: hashPassword(password),
+      }).returning();
 
-    const id = randomUUID();
-    const [user] = await db.insert(usersTable).values({
-      id,
-      email,
-      name,
-      passwordHash: hashPassword(password),
-    }).returning();
-
-    const sessionToken = randomUUID();
-    sessions.set(sessionToken, { userId: id, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
-
-    res.cookie("session", sessionToken, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
-    res.json({ user: { id: user.id, email: user.email, name: user.name } });
-  } catch (e) {
-    next(e);
-  }
+      return { id: user.id, email: user.email, name: user.name };
+    },
+    validateEmail: (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email),
+    validatePassword: (password) => password.length >= 6,
+  },
 });
 
-app.post("/api/auth/login", async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      throw new ValidationError("Email and password are required");
-    }
+app.use("/api/auth", authRouter);
+app.use(authMiddleware);
 
-    const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
-    if (!user || user.passwordHash !== hashPassword(password)) {
-      throw new UnauthorizedError("Invalid email or password");
-    }
-
-    const sessionToken = randomUUID();
-    sessions.set(sessionToken, { userId: user.id, expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) });
-
-    res.cookie("session", sessionToken, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
-    res.json({ user: { id: user.id, email: user.email, name: user.name } });
-  } catch (e) {
-    next(e);
-  }
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  const token = req.cookies?.session;
-  if (token) sessions.delete(token);
-  res.clearCookie("session");
-  res.json({ success: true });
-});
-
-app.get("/api/auth/me", async (req: any, res, next) => {
-  try {
-    if (!req.user) {
-      res.json({ user: null });
-      return;
-    }
-    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.user.id)).limit(1);
-    if (!user) {
-      res.json({ user: null });
-      return;
-    }
-    res.json({ user: { id: user.id, email: user.email, name: user.name } });
-  } catch (e) {
-    next(e);
-  }
-});
-
-// Todos resource
 app.use(
   "/api/todos",
   useResource(todosTable, {
@@ -176,7 +125,6 @@ app.use(
   })
 );
 
-// Admin UI
 app.use("/__concave", createAdminUI({
   title: "Todo App Admin",
   metricsCollector,
@@ -215,28 +163,38 @@ app.use("/__concave", createAdminUI({
     },
   },
   sessionManager: {
-    listSessions: async () => Array.from(sessions.entries()).map(([token, s]) => ({
-      sessionToken: token,
-      userId: s.userId,
-      expires: s.expiresAt,
-      createdAt: new Date(s.expiresAt.getTime() - 7 * 24 * 60 * 60 * 1000),
-    })),
-    getSessionsByUser: async (userId) => Array.from(sessions.entries())
-      .filter(([_, s]) => s.userId === userId)
-      .map(([token, s]) => ({ sessionToken: token, userId: s.userId, expires: s.expiresAt })),
-    createSession: async (userId, expiresIn = 86400000) => {
-      const token = randomUUID();
-      const expiresAt = new Date(Date.now() + expiresIn);
-      sessions.set(token, { userId, expiresAt });
-      return { token, expiresAt };
+    listSessions: async () => {
+      const sessions = await authAdapter.sessionStore.getAll?.() ?? [];
+      return sessions.map(s => ({
+        sessionToken: s.id,
+        userId: s.userId,
+        expires: s.expiresAt,
+        createdAt: s.createdAt,
+      }));
     },
-    revokeSession: async (sessionId) => { sessions.delete(sessionId); },
+    getSessionsByUser: async (userId) => {
+      const sessions = await authAdapter.sessionStore.getAll?.() ?? [];
+      return sessions
+        .filter(s => s.userId === userId)
+        .map(s => ({ sessionToken: s.id, userId: s.userId, expires: s.expiresAt }));
+    },
+    createSession: async (userId, expiresIn = 86400000) => {
+      const session = await authAdapter.createSession(userId);
+      return { token: session.id, expiresAt: session.expiresAt };
+    },
+    revokeSession: async (sessionId) => {
+      await authAdapter.invalidateSession(sessionId);
+    },
     revokeAllUserSessions: async (userId) => {
-      let count = 0;
-      for (const [token, s] of sessions.entries()) {
-        if (s.userId === userId) { sessions.delete(token); count++; }
+      const sessions = await authAdapter.sessionStore.getAll?.() ?? [];
+      let revokedCount = 0;
+      for (const s of sessions) {
+        if (s.userId === userId) {
+          await authAdapter.invalidateSession(s.id);
+          revokedCount++;
+        }
       }
-      return count;
+      return revokedCount;
     },
   },
 }));
@@ -255,11 +213,9 @@ const registeredResources: RegisteredResource[] = [{
 }];
 app.use("/__concave", createConcaveRouter(registeredResources));
 
-// Serve static frontend
 const publicDir = path.join(__dirname, "../public");
 app.use(express.static(publicDir));
 
-// SPA fallback - serve index.html for all non-API routes
 app.get("/{*splat}", (req, res, next) => {
   if (req.path.startsWith("/api") || req.path.startsWith("/__concave")) {
     return next();

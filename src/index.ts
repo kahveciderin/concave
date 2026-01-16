@@ -106,6 +106,8 @@ export {
 } from "./auth/scope";
 export { createPassportAdapter } from "./auth/adapters/passport";
 export { createAuthJsAdapter } from "./auth/adapters/authjs";
+export { useAuth, createAuthRoutes } from "./auth/routes";
+export type { UseAuthOptions, AuthRouterResult, AuthUser } from "./auth/routes";
 export type {
   AuthCredentials,
   AuthResult,

@@ -62,9 +62,14 @@ export class PassportAdapter extends BaseAuthAdapter {
       return { type: "session", sessionId: (req.session as any)?.id };
     }
 
-    const sessionId = req.cookies?.["connect.sid"] ?? req.sessionID;
-    if (sessionId && (req.session as any)?.passport?.user) {
-      return { type: "session", sessionId };
+    const passportSessionId = req.cookies?.["connect.sid"] ?? req.sessionID;
+    if (passportSessionId && (req.session as any)?.passport?.user) {
+      return { type: "session", sessionId: passportSessionId };
+    }
+
+    const sessionCookie = req.cookies?.session;
+    if (sessionCookie) {
+      return { type: "session", sessionId: sessionCookie };
     }
 
     const authHeader = req.headers.authorization;

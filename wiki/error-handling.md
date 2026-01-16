@@ -176,25 +176,50 @@ async function deleteUser(id: string) {
 ### Global Error Handler
 
 ```typescript
-const client = createClient({
+import { getOrCreateClient } from "concave/client";
+
+const client = getOrCreateClient({
   baseUrl: "/api",
+  credentials: "include",
+  offline: true,
   onError: (error) => {
-    // Called for offline mutation failures
+    // Called for offline mutation sync failures
     if (error instanceof TransportError) {
-      if (error.isUnauthorized()) {
-        // Token expired, refresh and retry
-        refreshToken();
-      } else if (error.isServerError()) {
+      if (error.isServerError()) {
         // Log to error tracking service
         errorTracker.capture(error);
       }
     }
   },
-  onAuthError: () => {
-    // Called specifically for 401 errors
-    redirectToLogin();
-  },
 });
+
+// Set global auth error handler (called on 401 responses)
+client.setAuthErrorHandler(() => {
+  redirectToLogin();
+});
+```
+
+### React Integration
+
+With the `useAuth` hook, auth errors are handled automatically:
+
+```typescript
+import { useAuth, useLiveList } from "concave/client/react";
+
+function App() {
+  const { user, isAuthenticated, logout } = useAuth<User>();
+
+  // Set auth error handler to trigger logout
+  useEffect(() => {
+    client.setAuthErrorHandler(logout);
+  }, [logout]);
+
+  // useLiveList automatically handles auth errors via the global handler
+  const { items, error } = useLiveList<Todo>("/api/todos");
+
+  if (!isAuthenticated) return <LoginPage />;
+  return <TodoList items={items} />;
+}
 ```
 
 ## Error Handling Patterns

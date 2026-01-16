@@ -11,7 +11,7 @@ import { UserContext } from "@/resource/types";
 
 export abstract class BaseAuthAdapter implements AuthAdapter {
   abstract name: string;
-  protected sessionStore: SessionStore;
+  readonly sessionStore: SessionStore;
   protected sessionTtlMs: number;
 
   constructor(options: { sessionStore?: SessionStore; sessionTtlMs?: number } = {}) {

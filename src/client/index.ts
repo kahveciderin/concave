@@ -116,14 +116,17 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
       return mutations?.length ?? 0;
     },
 
-    async checkAuth(url?: string): Promise<{ user: unknown | null }> {
+    async checkAuth(url?: string): Promise<{ user: unknown | null; expiresAt?: Date }> {
       const authUrl = url ?? config.authCheckUrl ?? "/api/auth/me";
       try {
         const response = await fetch(`${config.baseUrl}${authUrl}`, {
           credentials: config.credentials ?? "include",
         });
         const data = await response.json();
-        return { user: data.user ?? null };
+        return {
+          user: data.user ?? null,
+          expiresAt: data.expiresAt ? new Date(data.expiresAt) : undefined,
+        };
       } catch {
         return { user: null };
       }

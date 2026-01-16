@@ -118,6 +118,45 @@ useResource(usersTable, {
 });
 ```
 
+## Client Setup
+
+Connect from React with real-time subscriptions and offline support:
+
+```typescript
+// client.ts
+import { getOrCreateClient } from "concave/client";
+
+export const client = getOrCreateClient({
+  baseUrl: location.origin,
+  credentials: "include",
+  offline: true,  // Enable offline support with LocalStorage
+});
+
+// App.tsx
+import { useAuth, useLiveList } from "concave/client/react";
+
+function App() {
+  const { user, isAuthenticated, logout } = useAuth<User>();
+
+  if (!isAuthenticated) return <LoginPage />;
+  return <UserList />;
+}
+
+function UserList() {
+  const { items, status, mutate } = useLiveList<User>("/api/users", {
+    orderBy: "name:asc",
+  });
+
+  return (
+    <ul>
+      {items.map(user => (
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
 ## Next Steps
 
 ### Core Concepts
@@ -133,10 +172,12 @@ useResource(usersTable, {
 - [Authentication](./authentication.md) - Auth setup and scopes
 - [Secure Queries](./secure-queries.md) - Scope-enforced query builder
 
+### Client
+- [Client Library](./client-library.md) - TypeScript client with React hooks
+- [Offline Support](./offline-support.md) - Offline-first apps
+
 ### Advanced
 - [Procedures & Hooks](./procedures.md) - RPC and lifecycle hooks
-- [Client Library](./client-library.md) - TypeScript client
-- [Offline Support](./offline-support.md) - Offline-first apps
 - [Error Handling](./error-handling.md) - Error types and handling
 
 ### API Documentation
