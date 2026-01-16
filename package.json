@@ -1,6 +1,6 @@
 {
-  "name": "concave",
-  "version": "1.0.0",
+  "name": "@kahveciderin/concave",
+  "version": "0.1.0",
   "description": "Real-time resource API framework for Express.js with TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,15 +26,51 @@
     "./client/react": {
       "types": "./dist/client/react.d.ts",
       "import": "./dist/client/react.js"
+    },
+    "./tasks": {
+      "types": "./dist/tasks/index.d.ts",
+      "import": "./dist/tasks/index.js"
+    },
+    "./kv": {
+      "types": "./dist/kv/index.d.ts",
+      "import": "./dist/kv/index.js"
+    },
+    "./oidc": {
+      "types": "./dist/oidc/index.d.ts",
+      "import": "./dist/oidc/index.js"
+    },
+    "./openapi": {
+      "types": "./dist/openapi/index.d.ts",
+      "import": "./dist/openapi/index.js"
+    },
+    "./ui": {
+      "types": "./dist/ui/index.d.ts",
+      "import": "./dist/ui/index.js"
+    },
+    "./middleware/observability": {
+      "types": "./dist/middleware/observability.d.ts",
+      "import": "./dist/middleware/observability.js"
+    },
+    "./middleware/rateLimit": {
+      "types": "./dist/middleware/rateLimit.d.ts",
+      "import": "./dist/middleware/rateLimit.js"
+    },
+    "./middleware/error": {
+      "types": "./dist/middleware/error.d.ts",
+      "import": "./dist/middleware/error.js"
     }
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run build && npm run test",
     "start": "node dist/index.js",
     "lint": "eslint 'src/**/*.ts'",
     "test": "vitest run",
@@ -60,12 +96,21 @@
     "crud",
     "typescript",
     "sse",
-    "subscriptions"
+    "subscriptions",
+    "oidc",
+    "authentication",
+    "background-tasks",
+    "offline-first"
   ],
-  "author": "",
+  "author": "kahveciderin",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "git+https://github.com/kahveciderin/concave.git"
+  },
+  "homepage": "https://github.com/kahveciderin/concave#readme",
+  "bugs": {
+    "url": "https://github.com/kahveciderin/concave/issues"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
@@ -104,6 +149,7 @@
     "drizzle-orm": "^0.45.1",
     "eslint": "^9.39.2",
     "express": "^5.2.1",
+    "fast-check": "^4.5.3",
     "nodemon": "^3.1.11",
     "prettier": "^3.8.0",
     "supertest": "^7.2.2",
