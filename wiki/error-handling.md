@@ -6,31 +6,37 @@ Concave provides consistent error handling across both server and client with ty
 
 ### Error Response Format
 
-All errors follow a consistent JSON format:
+All errors follow [RFC 7807 Problem Details](https://tools.ietf.org/html/rfc7807) format with `Content-Type: application/problem+json`:
 
 ```json
 {
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Human-readable error message",
-    "details": { /* optional additional context */ }
-  }
+  "type": "/__concave/problems/not-found",
+  "title": "Not found",
+  "status": 404,
+  "detail": "users with id '123' not found",
+  "code": "NOT_FOUND",
+  "resource": "users",
+  "id": "123"
 }
 ```
 
 ### Error Types
 
-| Code | HTTP Status | Description |
+| Type | HTTP Status | Description |
 |------|-------------|-------------|
-| `NOT_FOUND` | 404 | Resource not found |
-| `VALIDATION_ERROR` | 400 | Invalid input data |
-| `UNAUTHORIZED` | 401 | Authentication required |
-| `FORBIDDEN` | 403 | Insufficient permissions |
-| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests |
-| `BATCH_LIMIT_EXCEEDED` | 400 | Batch size exceeded |
-| `FILTER_PARSE_ERROR` | 400 | Invalid filter syntax |
-| `CONFLICT` | 409 | Resource conflict |
-| `INTERNAL_ERROR` | 500 | Server error |
+| `not-found` | 404 | Resource not found |
+| `validation-error` | 400 | Invalid input data |
+| `unauthorized` | 401 | Authentication required |
+| `forbidden` | 403 | Insufficient permissions |
+| `rate-limit-exceeded` | 429 | Too many requests |
+| `batch-limit-exceeded` | 400 | Batch size exceeded |
+| `filter-parse-error` | 400 | Invalid filter syntax |
+| `conflict` | 409 | Resource conflict |
+| `precondition-failed` | 412 | ETag mismatch |
+| `cursor-invalid` | 400 | Pagination cursor malformed |
+| `cursor-expired` | 400 | Pagination cursor expired |
+| `idempotency-mismatch` | 409 | Idempotency key reused |
+| `internal-error` | 500 | Server error |
 
 ### Built-in Error Classes
 
@@ -44,18 +50,19 @@ import {
   BatchLimitError,
   FilterParseError,
   ConflictError,
+  PreconditionFailedError,
   ResourceError,
-} from "concave/resource";
+} from "@kahveciderin/concave";
 
 // Throw in hooks or procedures
 throw new NotFoundError("users", "123");
-// -> 404: { error: { code: "NOT_FOUND", message: "users with id '123' not found" } }
+// -> 404: { type: "/__concave/problems/not-found", title: "Not found", status: 404, detail: "users with id '123' not found", ... }
 
 throw new ValidationError("Email is required", { field: "email" });
-// -> 400: { error: { code: "VALIDATION_ERROR", message: "Email is required", details: { field: "email" } } }
+// -> 400: { type: "/__concave/problems/validation-error", title: "Validation error", status: 400, detail: "Email is required", ... }
 
 throw new ForbiddenError("Cannot delete admin users");
-// -> 403: { error: { code: "FORBIDDEN", message: "Cannot delete admin users" } }
+// -> 403: { type: "/__concave/problems/forbidden", title: "Forbidden", status: 403, detail: "Cannot delete admin users" }
 ```
 
 ### Error Middleware
@@ -63,30 +70,34 @@ throw new ForbiddenError("Cannot delete admin users");
 Add error handling middleware to your Express app:
 
 ```typescript
-import { asyncHandler, formatErrorResponse } from "concave/middleware";
+import { errorMiddleware } from "@kahveciderin/concave";
 
 // After all routes
-app.use((err, req, res, next) => {
-  const status = err.statusCode || err.status || 500;
-  const response = formatErrorResponse(err);
-  res.status(status).json(response);
-});
+app.use(errorMiddleware);
 ```
+
+The middleware automatically:
+- Formats errors as RFC 7807 Problem Details
+- Sets `Content-Type: application/problem+json`
+- Adds `Retry-After` header for rate limit errors
+- Includes request ID if available
+- Logs errors with structured JSON
 
 ### Validation Errors
 
-Validation errors from Zod include field-level details:
+Validation errors from Zod include field-level details in the `errors` array:
 
 ```json
 {
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Validation failed",
-    "details": [
-      { "field": "email", "message": "Invalid email format" },
-      { "field": "age", "message": "Expected number, received string" }
-    ]
-  }
+  "type": "/__concave/problems/validation-error",
+  "title": "Validation error",
+  "status": 400,
+  "detail": "Request validation failed",
+  "code": "VALIDATION_ERROR",
+  "errors": [
+    { "field": "email", "message": "Invalid email format" },
+    { "field": "age", "message": "Expected number, received string" }
+  ]
 }
 ```
 
@@ -97,7 +108,7 @@ Validation errors from Zod include field-level details:
 The client throws `TransportError` for all HTTP errors:
 
 ```typescript
-import { TransportError } from "concave/client";
+import { TransportError } from "@kahveciderin/concave/client";
 
 try {
   await users.get("nonexistent");
@@ -105,8 +116,9 @@ try {
   if (error instanceof TransportError) {
     console.log(error.status);   // 404
     console.log(error.code);     // "NOT_FOUND"
-    console.log(error.message);  // "User with id 'nonexistent' not found"
-    console.log(error.details);  // { resource: "users", id: "nonexistent" }
+    console.log(error.type);     // "/__concave/problems/not-found"
+    console.log(error.title);    // "Not found"
+    console.log(error.detail);   // "users with id 'nonexistent' not found"
   }
 }
 ```
@@ -176,7 +188,7 @@ async function deleteUser(id: string) {
 ### Global Error Handler
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
 
 const client = getOrCreateClient({
   baseUrl: "/api",

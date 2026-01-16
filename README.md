@@ -377,25 +377,30 @@ bio=isempty=false         # Has non-empty value
 
 ## Error Handling
 
-All errors follow a consistent format:
+All errors follow [RFC 7807 Problem Details](https://tools.ietf.org/html/rfc7807) format:
 
 ```json
 {
-  "error": {
-    "code": "NOT_FOUND",
-    "message": "User with id '123' not found",
-    "details": { "resource": "users", "id": "123" }
-  }
+  "type": "/__concave/problems/not-found",
+  "title": "Not found",
+  "status": 404,
+  "detail": "users with id '123' not found",
+  "code": "NOT_FOUND",
+  "resource": "users",
+  "id": "123"
 }
 ```
 
-Error codes include:
-- `NOT_FOUND` (404) - Resource not found
-- `VALIDATION_ERROR` (400) - Invalid input data
-- `UNAUTHORIZED` (401) - Authentication required
-- `FORBIDDEN` (403) - Insufficient permissions
-- `RATE_LIMIT_EXCEEDED` (429) - Too many requests
-- `BATCH_LIMIT_EXCEEDED` (400) - Batch size exceeded
+Error types include:
+- `not-found` (404) - Resource not found
+- `validation-error` (400) - Invalid input data
+- `unauthorized` (401) - Authentication required
+- `forbidden` (403) - Insufficient permissions
+- `rate-limit-exceeded` (429) - Too many requests
+- `batch-limit-exceeded` (400) - Batch size exceeded
+- `filter-parse-error` (400) - Invalid filter syntax
+- `cursor-invalid` (400) - Malformed pagination cursor
+- `precondition-failed` (412) - ETag mismatch
 
 ## Testing
 
