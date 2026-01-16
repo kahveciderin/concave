@@ -43,6 +43,7 @@ export {
   pushUpdatesToSubscriptions,
   pushDeletesToSubscriptions,
   clearAllSubscriptions,
+  type RelationLoader,
 } from "./resource/subscription";
 
 // Procedures
@@ -246,7 +247,6 @@ export type {
 
 // Relations
 export {
-  RelationLoader,
   parseInclude,
   parseNestedFilter,
 } from "./resource/relations";

@@ -22,6 +22,7 @@ import {
   getCatchupEvents,
   clearAllSubscriptions,
   addRelevantObject,
+  registerKnownIds,
 } from "@/resource/subscription";
 import { changelog } from "@/resource/changelog";
 import { createMemoryKV, setGlobalKV, KVAdapter } from "@/kv";
@@ -1254,5 +1255,329 @@ describe("Subscription System (No KV - In-Memory Fallback)", () => {
     await removeSubscription(subscriptionId2);
     await unregisterHandler(handlerId1);
     await unregisterHandler(handlerId2);
+  });
+});
+
+describe("Hybrid Subscription (skipExisting + knownIds)", () => {
+  let mockRes: ReturnType<typeof createMockResponse>;
+  let kv: KVAdapter;
+
+  beforeAll(async () => {
+    kv = createMemoryKV("hybrid-test");
+    await kv.connect();
+    setGlobalKV(kv);
+  });
+
+  afterAll(async () => {
+    await kv.disconnect();
+  });
+
+  beforeEach(async () => {
+    await clearAllSubscriptions();
+    await changelog.clear();
+    mockRes = createMockResponse();
+  });
+
+  describe("registerKnownIds", () => {
+    it("should register multiple known IDs at once", async () => {
+      const handlerId = "known-ids-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Register known IDs
+      await registerKnownIds(subscriptionId, ["1", "2", "3"]);
+
+      const subscription = await getSubscription(subscriptionId);
+      expect(subscription?.relevantObjectIds.has("1")).toBe(true);
+      expect(subscription?.relevantObjectIds.has("2")).toBe(true);
+      expect(subscription?.relevantObjectIds.has("3")).toBe(true);
+      expect(subscription?.relevantObjectIds.size).toBe(3);
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should handle empty array", async () => {
+      const handlerId = "known-ids-empty-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Register empty array - should not throw
+      await registerKnownIds(subscriptionId, []);
+
+      const subscription = await getSubscription(subscriptionId);
+      expect(subscription?.relevantObjectIds.size).toBe(0);
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should merge with existing relevant objects", async () => {
+      const handlerId = "known-ids-merge-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Add some via addRelevantObject
+      await addRelevantObject(subscriptionId, "existing-1");
+      await addRelevantObject(subscriptionId, "existing-2");
+
+      // Then register known IDs in bulk
+      await registerKnownIds(subscriptionId, ["new-1", "new-2"]);
+
+      const subscription = await getSubscription(subscriptionId);
+      expect(subscription?.relevantObjectIds.has("existing-1")).toBe(true);
+      expect(subscription?.relevantObjectIds.has("existing-2")).toBe(true);
+      expect(subscription?.relevantObjectIds.has("new-1")).toBe(true);
+      expect(subscription?.relevantObjectIds.has("new-2")).toBe(true);
+      expect(subscription?.relevantObjectIds.size).toBe(4);
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+  });
+
+  describe("Hybrid subscription workflow", () => {
+    const mockFilter = createMockFilter();
+
+    it("should receive add events for new items when using knownIds", async () => {
+      const handlerId = "hybrid-add-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Simulate client has fetched items 1 and 2 via GET
+      await registerKnownIds(subscriptionId, ["1", "2"]);
+
+      // A new item is added - client should receive this
+      await pushInsertsToSubscriptions(
+        "users",
+        mockFilter as any,
+        [{ id: "3", name: "New User", status: "active" }],
+        "id"
+      );
+
+      const events = mockRes.getEvents();
+      expect(events.length).toBe(1);
+      expect(events[0].type).toBe("added");
+      expect(events[0].object.id).toBe("3");
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should receive changed events for known items", async () => {
+      const handlerId = "hybrid-change-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Client has item 1 via GET
+      await registerKnownIds(subscriptionId, ["1"]);
+
+      // Item 1 is updated
+      await pushUpdatesToSubscriptions(
+        "users",
+        mockFilter as any,
+        [{ id: "1", name: "Updated User", status: "active" }],
+        "id"
+      );
+
+      const events = mockRes.getEvents();
+      expect(events.length).toBe(1);
+      expect(events[0].type).toBe("changed");
+      expect(events[0].object.id).toBe("1");
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should receive removed events for known items", async () => {
+      const handlerId = "hybrid-remove-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Client has items 1 and 2 via GET
+      await registerKnownIds(subscriptionId, ["1", "2"]);
+
+      // Item 1 is deleted
+      await pushDeletesToSubscriptions("users", ["1"]);
+
+      const events = mockRes.getEvents();
+      expect(events.length).toBe(1);
+      expect(events[0].type).toBe("removed");
+      expect(events[0].objectId).toBe("1");
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should not receive removed events for unknown items", async () => {
+      const handlerId = "hybrid-unknown-remove-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Client only knows about items 1 and 2
+      await registerKnownIds(subscriptionId, ["1", "2"]);
+
+      // Item 999 is deleted - client should NOT receive this
+      await pushDeletesToSubscriptions("users", ["999"]);
+
+      const events = mockRes.getEvents();
+      expect(events.length).toBe(0);
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should receive removed event when known item leaves filter scope", async () => {
+      const handlerId = "hybrid-scope-exit-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: 'status=="active"',
+        handlerId,
+        authId: null,
+      });
+
+      // Client has item 1 (which was active)
+      await registerKnownIds(subscriptionId, ["1"]);
+
+      // Item 1 is updated to inactive - it leaves the filter scope
+      await pushUpdatesToSubscriptions(
+        "users",
+        mockFilter as any,
+        [{ id: "1", name: "User", status: "inactive" }],
+        "id"
+      );
+
+      const events = mockRes.getEvents();
+      expect(events.length).toBe(1);
+      expect(events[0].type).toBe("removed");
+      expect(events[0].objectId).toBe("1");
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should receive added event when unknown item enters filter scope", async () => {
+      const handlerId = "hybrid-scope-enter-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: 'status=="active"',
+        handlerId,
+        authId: null,
+      });
+
+      // Client has item 1 initially
+      await registerKnownIds(subscriptionId, ["1"]);
+
+      // Item 2 was inactive but is updated to active - it enters the filter scope
+      // Since client doesn't know item 2, this is treated as an "added" event
+      await pushUpdatesToSubscriptions(
+        "users",
+        mockFilter as any,
+        [{ id: "2", name: "User 2", status: "active" }],
+        "id"
+      );
+
+      const events = mockRes.getEvents();
+      expect(events.length).toBe(1);
+      expect(events[0].type).toBe("added");
+      expect(events[0].object.id).toBe("2");
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
+
+    it("should handle paginated subscriptions correctly", async () => {
+      const handlerId = "hybrid-paginated-handler";
+      registerHandler(handlerId, mockRes);
+
+      const subscriptionId = await createSubscription({
+        resource: "users",
+        filter: "",
+        handlerId,
+        authId: null,
+      });
+
+      // Simulate client fetched first page (items 1-5)
+      await registerKnownIds(subscriptionId, ["1", "2", "3", "4", "5"]);
+
+      // Item 6 is added (would be on page 2) - client should receive added event
+      await pushInsertsToSubscriptions(
+        "users",
+        mockFilter as any,
+        [{ id: "6", name: "Page 2 User", status: "active" }],
+        "id"
+      );
+
+      // Item 3 is updated - client should receive changed event
+      await pushUpdatesToSubscriptions(
+        "users",
+        mockFilter as any,
+        [{ id: "3", name: "Updated User 3", status: "active" }],
+        "id"
+      );
+
+      // Item 2 is deleted - client should receive removed event
+      await pushDeletesToSubscriptions("users", ["2"]);
+
+      const events = mockRes.getEvents();
+      expect(events.length).toBe(3);
+
+      const addedEvent = events.find((e: any) => e.type === "added");
+      const changedEvent = events.find((e: any) => e.type === "changed");
+      const removedEvent = events.find((e: any) => e.type === "removed");
+
+      expect(addedEvent?.object.id).toBe("6");
+      expect(changedEvent?.object.id).toBe("3");
+      expect(removedEvent?.objectId).toBe("2");
+
+      await removeSubscription(subscriptionId);
+      await unregisterHandler(handlerId);
+    });
   });
 });

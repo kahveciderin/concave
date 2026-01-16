@@ -432,3 +432,21 @@ input:focus {
 .status-dot.reconnecting {
   background: #f59e0b;
 }
+
+/* Pagination */
+.pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.pagination button {
+  min-width: 120px;
+}
+
+.pagination button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

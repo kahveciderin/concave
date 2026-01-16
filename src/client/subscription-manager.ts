@@ -54,8 +54,20 @@ export class SubscriptionManager<T extends { id: string }> implements Subscripti
       params.filter = this.config.options.filter;
     }
 
+    if (this.config.options?.include) {
+      params.include = this.config.options.include;
+    }
+
     if (this._state.lastSeq > 0) {
       params.resumeFrom = String(this._state.lastSeq);
+    }
+
+    if (this.config.options?.skipExisting) {
+      params.skipExisting = "true";
+    }
+
+    if (this.config.options?.knownIds && this.config.options.knownIds.length > 0) {
+      params.knownIds = this.config.options.knownIds.join(",");
     }
 
     const path = `${this.config.resourcePath}/subscribe`;

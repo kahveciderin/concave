@@ -31,6 +31,7 @@ import {
   sendInvalidateEvent,
   isHandlerConnected,
   getHandlerSubscriptions,
+  registerKnownIds,
 } from "./subscription";
 import {
   createPagination,
@@ -123,6 +124,15 @@ export const useResource = <TConfig extends TableConfig>(
         config.include
       )
     : null;
+
+  // Create a subscription relation loader for pushing updates with relations
+  const subscriptionRelationLoader = relationLoader
+    ? async <T extends Record<string, unknown>>(items: T[], include: string): Promise<T[]> => {
+        const includeSpecs = parseInclude(include);
+        if (includeSpecs.length === 0) return items;
+        return relationLoader.loadRelationsForItems(items, includeSpecs, idColumnName) as Promise<T[]>;
+      }
+    : undefined;
 
   const router = Router();
 
@@ -260,7 +270,9 @@ export const useResource = <TConfig extends TableConfig>(
           resourceName,
           filterer as any,
           createdArray,
-          idColumnName
+          idColumnName,
+          undefined,
+          subscriptionRelationLoader
         );
 
         res.json({ items: created });
@@ -318,7 +330,8 @@ export const useResource = <TConfig extends TableConfig>(
           filterer as any,
           result.items,
           idColumnName,
-          result.previousMap
+          result.previousMap,
+          subscriptionRelationLoader
         );
 
         res.json({ count: result.count });
@@ -402,6 +415,7 @@ export const useResource = <TConfig extends TableConfig>(
       const user = getUser(req);
       const scope = await scopeResolver.resolve("subscribe", user);
       const filterQuery = req.query.filter?.toString() ?? "";
+      const includeQuery = req.query.include?.toString();
       const handlerId = uuidv4();
 
       const resumeFrom = req.headers["last-event-id"]
@@ -409,6 +423,10 @@ export const useResource = <TConfig extends TableConfig>(
         : req.query.resumeFrom
           ? parseInt(req.query.resumeFrom.toString(), 10)
           : undefined;
+
+      const skipExisting = req.query.skipExisting === "true";
+      const knownIdsParam = req.query.knownIds?.toString();
+      const knownIds = knownIdsParam ? knownIdsParam.split(",").filter(id => id.length > 0) : [];
 
       const userId = user?.id ?? "anonymous";
       const clientIP = req.ip ?? req.socket.remoteAddress ?? "unknown";
@@ -471,6 +489,7 @@ export const useResource = <TConfig extends TableConfig>(
         authId: user?.id ?? null,
         scopeFilter: scope.toString() !== "*" ? scope.toString() : undefined,
         authExpiresAt: user?.sessionExpiresAt,
+        include: includeQuery,
       });
 
       res.on("drain", () => {
@@ -481,6 +500,24 @@ export const useResource = <TConfig extends TableConfig>(
         if (resumeFrom !== undefined) {
           if (await changelog.needsInvalidation(resumeFrom)) {
             await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
+          }
+        } else if (skipExisting) {
+          // Client already has data from paginated GET, just register known IDs
+          if (knownIds.length > 0) {
+            await registerKnownIds(subscriptionId, knownIds);
+          }
+          // If no knownIds provided but skipExisting is true, we need to query
+          // matching items to populate relevantObjectIds for proper change tracking
+          // This ensures removed events work correctly when items leave the filter scope
+          else {
+            const combinedFilter = combineScopes(scope, filterQuery);
+            const filter = combinedFilter && combinedFilter !== "*"
+              ? (filterer.convert(combinedFilter) as SQL<unknown>)
+              : undefined;
+
+            const items = await db.select().from(schema).where(filter);
+            const ids = (items as Record<string, unknown>[]).map(item => String(item[idColumnName]));
+            await registerKnownIds(subscriptionId, ids);
           }
         } else {
           const combinedFilter = combineScopes(scope, filterQuery);
@@ -622,7 +659,8 @@ export const useResource = <TConfig extends TableConfig>(
         filterer as any,
         [createdObj],
         idColumnName,
-        optimisticIds
+        optimisticIds,
+        subscriptionRelationLoader
       );
 
       const response = optimisticId
@@ -775,7 +813,8 @@ export const useResource = <TConfig extends TableConfig>(
         filterer as any,
         [updated],
         idColumnName,
-        previousMap
+        previousMap,
+        subscriptionRelationLoader
       );
 
       res.json(updated);
@@ -817,7 +856,8 @@ export const useResource = <TConfig extends TableConfig>(
         filterer as any,
         [updated],
         idColumnName,
-        previousMap
+        previousMap,
+        subscriptionRelationLoader
       );
 
       res.json(updated);

@@ -306,7 +306,9 @@ function TodoList() {
     filter: 'userId=="123"',
     orderBy: "position",
     limit: 100,
-    enabled: true,  // Set to false to disable the query
+    include: "category,tags",        // Include related data
+    subscriptionMode: "strict",      // Control how updates are handled (see below)
+    enabled: true,                   // Set to false to disable the query
   });
 
   // Create with optimistic update
@@ -353,6 +355,94 @@ const todosRepo = client.resource<Todo>("/api/todos");
 
 // Later in a component
 const { items } = useLiveList(todosRepo, { orderBy: "position" });
+```
+
+#### Pagination with Load More
+
+When using `limit`, the hook supports paginated loading:
+
+```typescript
+const {
+  items,
+  hasMore,        // true if more items available
+  totalCount,     // total count if requested
+  isLoadingMore,  // true while loading more
+  loadMore,       // () => Promise<void> - load next page
+} = useLiveList<Todo>("/api/todos", {
+  limit: 20,
+  orderBy: "createdAt:desc",
+});
+
+return (
+  <div>
+    {items.map(todo => <TodoItem key={todo.id} todo={todo} />)}
+    {hasMore && (
+      <button onClick={loadMore} disabled={isLoadingMore}>
+        {isLoadingMore ? "Loading..." : "Load More"}
+      </button>
+    )}
+    {totalCount && <p>Showing {items.length} of {totalCount}</p>}
+  </div>
+);
+```
+
+#### Subscription Modes for Paginated Lists
+
+When paginating, control how real-time updates are handled with `subscriptionMode`:
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `strict` (default with `limit`) | Only show your own creates, updates to cached items | Admin tables, data grids |
+| `sorted` | New items appear in sort order | Collaborative lists |
+| `append` | New items appear at end | Chat logs, activity feeds |
+| `prepend` | New items appear at start | Notifications, news feeds |
+| `live` (default without `limit`) | All updates shown | Real-time dashboards |
+
+```typescript
+// Chat-style: new messages at the end
+const { items } = useLiveList<Message>("/api/messages", {
+  limit: 50,
+  subscriptionMode: "append",
+  orderBy: "createdAt:asc",
+});
+
+// Notifications: newest at top
+const { items } = useLiveList<Notification>("/api/notifications", {
+  limit: 20,
+  subscriptionMode: "prepend",
+  orderBy: "createdAt:desc",
+});
+```
+
+#### Relations and Optimistic Updates
+
+When using `include` with relations, the optimistic update behavior is:
+
+1. **Changing a foreign key** (e.g., `categoryId`): The stale relation is cleared immediately
+2. **Server confirms**: The new relation data is populated from the server response
+3. **For instant UX**: Look up relations from locally cached data
+
+```typescript
+// Include relations
+const { items: todos } = useLiveList<TodoWithCategory>("/api/todos", {
+  include: "category",
+});
+
+// Also fetch categories separately
+const { items: categories } = useLiveList<Category>("/api/categories");
+
+// In your component, handle optimistic updates gracefully
+function TodoItem({ todo }) {
+  // Use included relation, or look up from local cache
+  const category = todo.category ?? categories.find(c => c.id === todo.categoryId);
+
+  return (
+    <div>
+      {todo.title}
+      {category && <Badge color={category.color}>{category.name}</Badge>}
+    </div>
+  );
+}
 ```
 
 ### useAuth
@@ -687,6 +777,8 @@ interface UseLiveListOptions {
   filter?: string;
   orderBy?: string;
   limit?: number;
+  include?: string;
+  subscriptionMode?: "strict" | "sorted" | "append" | "prepend" | "live";
   enabled?: boolean;
 }
 
@@ -701,8 +793,12 @@ interface UseLiveListResult<T> {
   isLive: boolean;
   isOffline: boolean;
   isReconnecting: boolean;
+  hasMore: boolean;
+  totalCount?: number;
+  isLoadingMore: boolean;
   mutate: LiveQueryMutations<T>;
   refresh: () => Promise<void>;
+  loadMore: () => Promise<void>;
 }
 
 // Mutation methods

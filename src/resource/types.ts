@@ -86,6 +86,7 @@ export interface Subscription {
   lastSeq: number;
   scopeFilter?: string;
   authExpiresAt?: Date | null;
+  include?: string;
 }
 
 export interface PaginationParams {

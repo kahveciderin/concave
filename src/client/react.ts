@@ -19,8 +19,12 @@ export interface UseLiveListResult<T extends { id: string }> {
   isLive: boolean;
   isOffline: boolean;
   isReconnecting: boolean;
+  hasMore: boolean;
+  totalCount?: number;
+  isLoadingMore: boolean;
   mutate: LiveQueryMutations<T>;
   refresh: () => Promise<void>;
+  loadMore: () => Promise<void>;
 }
 
 /**
@@ -41,6 +45,9 @@ const EMPTY_STATE: LiveQueryState<never> = {
   error: null,
   pendingCount: 0,
   lastSeq: 0,
+  hasMore: false,
+  totalCount: undefined,
+  isLoadingMore: false,
 };
 
 export function useLiveList<T extends { id: string }>(
@@ -123,6 +130,10 @@ export function useLiveList<T extends { id: string }>(
     await liveQueryRef.current?.refresh();
   }, []);
 
+  const loadMore = useCallback(async () => {
+    await liveQueryRef.current?.loadMore();
+  }, []);
+
   // Use state's pending count if available, otherwise use polled count
   const effectivePendingCount = state.pendingCount > 0 ? state.pendingCount : pendingCount;
 
@@ -136,8 +147,12 @@ export function useLiveList<T extends { id: string }>(
     isLive: state.status === "live",
     isOffline: state.status === "offline",
     isReconnecting: state.status === "reconnecting",
+    hasMore: state.hasMore,
+    totalCount: state.totalCount,
+    isLoadingMore: state.isLoadingMore,
     mutate,
     refresh,
+    loadMore,
   };
 }
 
@@ -237,4 +252,4 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
 }
 
 export { statusLabel } from "./live-store";
-export type { LiveQueryStatus, LiveQueryState, LiveQueryMutations, LiveQuery } from "./live-store";
+export type { LiveQueryStatus, LiveQueryState, LiveQueryMutations, LiveQuery, SubscriptionMode } from "./live-store";

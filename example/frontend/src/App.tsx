@@ -51,10 +51,19 @@ function TodoApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryColor, setNewCategoryColor] = useState('#6366f1');
 
-  // Fetch todos with relations
-  const { items: todos, status, statusLabel, mutate } = useLiveList<TodoWithRelations>(
+  // Fetch todos with relations (paginated - 5 items at a time)
+  const {
+    items: todos,
+    status,
+    statusLabel,
+    mutate,
+    hasMore,
+    totalCount,
+    isLoadingMore,
+    loadMore,
+  } = useLiveList<TodoWithRelations>(
     '/api/todos',
-    { orderBy: 'position', include: 'category,tags' }
+    { orderBy: 'position', include: 'category,tags', limit: 5 }
   );
 
   // Fetch categories for the dropdown
@@ -188,23 +197,28 @@ function TodoApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <span className={`todo-title${todo.completed ? ' completed' : ''}`}>
                       {todo.title}
                     </span>
-                    {(todo.category || (todo.tags && todo.tags.length > 0)) && (
-                      <div className="todo-meta">
-                        {todo.category && (
-                          <span
-                            className="todo-category"
-                            style={{ backgroundColor: todo.category.color || '#6366f1' }}
-                          >
-                            {todo.category.name}
-                          </span>
-                        )}
-                        {todo.tags && todo.tags.map((tag) => (
+                    {(() => {
+                      // Use included relation if available, otherwise look up from categories list
+                      // This handles optimistic updates where the relation is cleared but categoryId is set
+                      const displayCategory = todo.category ?? categories.find(c => c.id === todo.categoryId);
+                      return (displayCategory || (todo.tags && todo.tags.length > 0)) && (
+                        <div className="todo-meta">
+                          {displayCategory && (
+                            <span
+                              className="todo-category"
+                              style={{ backgroundColor: displayCategory.color || '#6366f1' }}
+                            >
+                              {displayCategory.name}
+                            </span>
+                          )}
+                          {todo.tags && todo.tags.map((tag) => (
                           <span key={tag.id} className="todo-tag">
                             {tag.name}
                           </span>
                         ))}
                       </div>
-                    )}
+                    );
+                    })()}
                   </div>
                   {/* Category quick-assign dropdown */}
                   <select
@@ -229,11 +243,27 @@ function TodoApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               ))}
             </ul>
           )}
+
+          {/* Pagination */}
+          {hasMore && (
+            <div className="pagination">
+              <button
+                className="btn btn-secondary"
+                onClick={loadMore}
+                disabled={isLoadingMore}
+              >
+                {isLoadingMore ? 'Loading...' : 'Load More'}
+              </button>
+            </div>
+          )}
         </div>
         {todos.length > 0 && (
           <div className="stats">
             <div><span>{completedCount}</span> completed</div>
             <div><span>{todos.length - completedCount}</span> remaining</div>
+            {totalCount !== undefined && (
+              <div><span>{todos.length}</span> of <span>{totalCount}</span> loaded</div>
+            )}
           </div>
         )}
         <div className="connection-status">

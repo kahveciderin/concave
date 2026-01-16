@@ -133,6 +133,67 @@ Sent when the client needs to refetch all data:
 }
 ```
 
+## Hybrid Subscriptions (Efficient Large Datasets)
+
+For large datasets, the default behavior of sending all existing items on connect can be inefficient. Concave supports a **hybrid approach** where you:
+
+1. Fetch initial data via paginated GET
+2. Subscribe with `skipExisting=true` to receive only changes
+
+### How `useLiveList` Works
+
+The `useLiveList` hook automatically uses this hybrid approach:
+
+```typescript
+// Internally, useLiveList:
+// 1. Fetches data via paginated GET
+// 2. Subscribes with skipExisting=true and passes the IDs it knows about
+// 3. Only receives added/changed/removed events - no duplicate data transfer
+```
+
+### Manual Hybrid Subscription
+
+For more control, use the low-level API:
+
+```typescript
+const users = client.resource<User>("/users");
+
+// Step 1: Fetch initial data via paginated GET
+const { items } = await users.list({ limit: 20, orderBy: "name" });
+
+// Step 2: Subscribe with skipExisting, passing known IDs
+const subscription = users.subscribe(
+  {
+    skipExisting: true,
+    knownIds: items.map(item => item.id),
+  },
+  {
+    onAdded: (user) => console.log("New user:", user),
+    onChanged: (user) => console.log("Updated:", user),
+    onRemoved: (id) => console.log("Deleted:", id),
+  }
+);
+```
+
+### Server Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `skipExisting` | boolean | Skip sending existing items on connect |
+| `knownIds` | string (comma-separated) | IDs the client already knows about |
+
+### How It Works
+
+When `skipExisting=true`:
+- No `existing` events are sent
+- If `knownIds` are provided, they're registered for change tracking
+- If no `knownIds`, the server queries matching items to register their IDs
+
+This ensures:
+- **`added` events** are sent for new items matching the filter
+- **`changed` events** are sent when known items are updated
+- **`removed` events** are sent when known items are deleted or leave filter scope
+
 ## Changelog-Based Subscriptions
 
 Concave uses a changelog-based approach for reliable subscriptions:
@@ -175,3 +236,157 @@ The subscription manager handles:
 - Automatic reconnection with exponential backoff
 - Heartbeat to detect connection issues
 - Cleanup on page unload
+
+## Paginated Subscriptions with Subscription Modes
+
+When using `useLiveList` with pagination (`limit`), you need to control how real-time updates interact with your paginated view. By default, the server sends events for ALL items matching the filter, not just the visible page.
+
+### The Problem
+
+Without subscription modes:
+1. Client fetches first 5 items via GET
+2. Client subscribes with `skipExisting=true`
+3. Another user creates a new item matching the filter
+4. Client receives `added` event and shows 6 items - pagination broken!
+
+### Subscription Modes
+
+Use `subscriptionMode` to control this behavior:
+
+| Mode | New Items | Updated Items | Removed Items | Use Case |
+|------|-----------|---------------|---------------|----------|
+| `strict` | Only own creates | Only cached items | Cached items | Tables, admin dashboards |
+| `sorted` | Show (in sort order) | Only cached items | Cached items | Collaborative lists, kanban boards |
+| `append` | Show (at end) | Only cached items | Cached items | Chat, activity logs |
+| `prepend` | Show (at start) | Only cached items | Cached items | Notifications, news feeds |
+| `live` | Show all | Show all | All known | Real-time dashboards |
+
+**Default**: `strict` when `limit` is set, `live` otherwise.
+
+### Usage Examples
+
+```typescript
+// Strict mode (default for paginated) - only show fetched items + own creates
+const { items } = useLiveList<Todo>('/api/todos', {
+  limit: 10,
+  // subscriptionMode: "strict" is implicit when limit is set
+});
+
+// Sorted mode - show new items in correct sort position
+const { items } = useLiveList<Task>('/api/tasks', {
+  limit: 20,
+  subscriptionMode: "sorted",
+  orderBy: "priority:desc,createdAt:desc"
+});
+
+// Append mode - show new items at end (like a chat log)
+const { items } = useLiveList<Message>('/api/messages', {
+  limit: 50,
+  subscriptionMode: "append",
+  orderBy: "createdAt:asc"
+});
+
+// Prepend mode - show new items at start (like notifications)
+const { items } = useLiveList<Notification>('/api/notifications', {
+  limit: 20,
+  subscriptionMode: "prepend",
+  orderBy: "createdAt:desc"
+});
+
+// Live mode - show everything (explicit override for paginated)
+const { items } = useLiveList<Alert>('/api/alerts', {
+  limit: 20,
+  subscriptionMode: "live"  // Override default strict
+});
+```
+
+### Mode Behavior Details
+
+**Strict Mode** (default for paginated):
+- New items from other clients are NOT added to the list
+- Your own creates appear immediately (optimistic updates)
+- Updates to cached items are applied
+- Removes work for cached items
+
+**Sorted Mode**:
+- New items from other clients appear in the correct sort position
+- Useful for collaborative editing where you want to see others' additions
+
+**Append/Prepend Mode**:
+- New items appear at the end/start regardless of sort order
+- Useful for chronological feeds where new items should be visible
+
+**Live Mode** (default for non-paginated):
+- All events are processed - the "see everything" mode
+- Use this for real-time dashboards or when showing all items
+
+## Relations in Subscriptions
+
+Subscriptions support the `include` parameter to receive related data in events:
+
+```bash
+GET /api/todos/subscribe?include=category,tags
+```
+
+When configured, `added` and `changed` events include the related objects:
+
+```json
+{
+  "type": "changed",
+  "seq": 5,
+  "object": {
+    "id": "1",
+    "title": "Buy groceries",
+    "categoryId": "cat-1",
+    "category": {
+      "id": "cat-1",
+      "name": "Shopping",
+      "color": "#00ff00"
+    },
+    "tags": [
+      { "id": "tag-1", "name": "urgent" }
+    ]
+  }
+}
+```
+
+### Using with useLiveList
+
+The `include` option is passed to both the initial GET and the subscription:
+
+```typescript
+const { items } = useLiveList<TodoWithRelations>('/api/todos', {
+  include: 'category,tags',
+  orderBy: 'position',
+});
+
+// items[0].category is available
+// items[0].tags is available
+```
+
+### Optimistic Updates and Relations
+
+When you update a foreign key (e.g., changing `categoryId`), the optimistic update clears the stale relation immediately:
+
+```typescript
+// Before: { categoryId: "cat-1", category: { name: "Work" } }
+mutate.update(todo.id, { categoryId: "cat-2" });
+// Immediately after: { categoryId: "cat-2", category: undefined }
+// After server confirms: { categoryId: "cat-2", category: { name: "Personal" } }
+```
+
+For instant UI updates, you can look up relations from locally cached data:
+
+```typescript
+function TodoItem({ todo, categories }) {
+  // Use included relation if available, otherwise look up locally
+  const category = todo.category ?? categories.find(c => c.id === todo.categoryId);
+
+  return (
+    <div>
+      {todo.title}
+      {category && <span style={{ color: category.color }}>{category.name}</span>}
+    </div>
+  );
+}
+```

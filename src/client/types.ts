@@ -110,6 +110,8 @@ export interface SubscribeOptions {
   filter?: string;
   include?: string;
   resumeFrom?: number;
+  skipExisting?: boolean;
+  knownIds?: string[];
 }
 
 export interface CreateOptions {

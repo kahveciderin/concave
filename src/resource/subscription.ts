@@ -45,6 +45,7 @@ interface SerializedSubscription {
   lastSeq: number;
   scopeFilter?: string;
   authExpiresAt?: string | null;
+  include?: string;
 }
 
 interface BroadcastEvent {
@@ -64,6 +65,7 @@ const serializeSubscription = (sub: Subscription): string => {
     lastSeq: sub.lastSeq,
     scopeFilter: sub.scopeFilter,
     authExpiresAt: sub.authExpiresAt?.toISOString() ?? null,
+    include: sub.include,
   };
   return JSON.stringify(serialized);
 };
@@ -81,6 +83,7 @@ const deserializeSubscription = (data: string): Subscription => {
     lastSeq: parsed.lastSeq,
     scopeFilter: parsed.scopeFilter,
     authExpiresAt: parsed.authExpiresAt ? new Date(parsed.authExpiresAt) : null,
+    include: parsed.include,
   };
 };
 
@@ -113,6 +116,26 @@ export const addRelevantObject = async (subscriptionId: string, objectId: string
   objects.add(objectId);
 };
 
+// Register multiple known IDs at once (for skipExisting mode)
+export const registerKnownIds = async (subscriptionId: string, ids: string[]): Promise<void> => {
+  if (ids.length === 0) return;
+
+  const kv = getKV();
+  if (kv) {
+    await kv.sadd(`${SUBSCRIPTION_OBJECTS_PREFIX}${subscriptionId}`, ...ids);
+    return;
+  }
+
+  let objects = localRelevantObjects.get(subscriptionId);
+  if (!objects) {
+    objects = new Set();
+    localRelevantObjects.set(subscriptionId, objects);
+  }
+  for (const id of ids) {
+    objects.add(id);
+  }
+};
+
 // Remove a relevant object ID from KV or local storage
 const removeRelevantObject = async (subscriptionId: string, objectId: string): Promise<void> => {
   const kv = getKV();
@@ -141,6 +164,7 @@ export interface CreateSubscriptionOptions {
   authId: string | null;
   scopeFilter?: string;
   authExpiresAt?: Date | null;
+  include?: string;
 }
 
 export const createSubscription = async (
@@ -158,6 +182,7 @@ export const createSubscription = async (
     lastSeq: await changelog.getCurrentSequence(),
     scopeFilter: options.scopeFilter,
     authExpiresAt: options.authExpiresAt,
+    include: options.include,
   };
 
   const kv = getKV();
@@ -363,14 +388,40 @@ export const sendExistingItems = async <T extends Record<string, unknown>>(
   }
 };
 
+export type RelationLoader<T> = (items: T[], include: string) => Promise<T[]>;
+
 export const pushInsertsToSubscriptions = async <T extends Record<string, unknown>>(
   resource: string,
   filterFactory: Filter,
   items: T[],
   idColumn: string,
-  optimisticIds?: Map<string, string>
+  optimisticIds?: Map<string, string>,
+  relationLoader?: RelationLoader<T>
 ): Promise<void> => {
   const allSubs = await getAllSubscriptions();
+
+  // Cache for items with relations loaded (keyed by include string)
+  const itemsWithRelationsCache = new Map<string, Map<string, T>>();
+
+  const getItemWithRelations = async (item: T, include: string | undefined): Promise<T> => {
+    if (!include || !relationLoader) return item;
+
+    const id = String(item[idColumn]);
+    let cache = itemsWithRelationsCache.get(include);
+    if (!cache) {
+      cache = new Map();
+      itemsWithRelationsCache.set(include, cache);
+    }
+
+    if (cache.has(id)) {
+      return cache.get(id)!;
+    }
+
+    // Load relations for this item
+    const [itemWithRelations] = await relationLoader([item], include);
+    cache.set(id, itemWithRelations);
+    return itemWithRelations;
+  };
 
   for (const [subId, subscription] of allSubs) {
     if (subscription.resource !== resource) continue;
@@ -393,13 +444,14 @@ export const pushInsertsToSubscriptions = async <T extends Record<string, unknow
       await addRelevantObject(subId, id);
 
       const optimisticId = optimisticIds?.get(id);
+      const itemToSend = await getItemWithRelations(item, subscription.include);
       const event: AddedEvent<T> = {
         id: uuidv4(),
         subscriptionId: subId,
         seq: await getNextSeq(subId),
         timestamp: Date.now(),
         type: "added",
-        object: item,
+        object: itemToSend,
         ...(optimisticId && { meta: { optimisticId } }),
       };
 
@@ -416,9 +468,33 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
   filterFactory: Filter,
   items: T[],
   idColumn: string,
-  previousItems?: Map<string, T>
+  previousItems?: Map<string, T>,
+  relationLoader?: RelationLoader<T>
 ): Promise<void> => {
   const allSubs = await getAllSubscriptions();
+
+  // Cache for items with relations loaded (keyed by include string)
+  const itemsWithRelationsCache = new Map<string, Map<string, T>>();
+
+  const getItemWithRelations = async (item: T, include: string | undefined): Promise<T> => {
+    if (!include || !relationLoader) return item;
+
+    const id = String(item[idColumn]);
+    let cache = itemsWithRelationsCache.get(include);
+    if (!cache) {
+      cache = new Map();
+      itemsWithRelationsCache.set(include, cache);
+    }
+
+    if (cache.has(id)) {
+      return cache.get(id)!;
+    }
+
+    // Load relations for this item
+    const [itemWithRelations] = await relationLoader([item], include);
+    cache.set(id, itemWithRelations);
+    return itemWithRelations;
+  };
 
   for (const [subId, subscription] of allSubs) {
     if (subscription.resource !== resource) continue;
@@ -441,13 +517,14 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
       if (isRelevant && !wasRelevant) {
         await addRelevantObject(subId, id);
 
+        const itemToSend = await getItemWithRelations(item, subscription.include);
         const event: AddedEvent<T> = {
           id: uuidv4(),
           subscriptionId: subId,
           seq: await getNextSeq(subId),
           timestamp: Date.now(),
           type: "added",
-          object: item,
+          object: itemToSend,
         };
 
         if (!sendEvent(subscription.handlerId, event)) {
@@ -458,13 +535,14 @@ export const pushUpdatesToSubscriptions = async <T extends Record<string, unknow
           ? String(previousItems.get(id)![idColumn])
           : undefined;
 
+        const itemToSend = await getItemWithRelations(item, subscription.include);
         const event: ChangedEvent<T> = {
           id: uuidv4(),
           subscriptionId: subId,
           seq: await getNextSeq(subId),
           timestamp: Date.now(),
           type: "changed",
-          object: item,
+          object: itemToSend,
           previousObjectId,
         };
 
