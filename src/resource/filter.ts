@@ -84,7 +84,38 @@ const escapeRegexChar = (ch: string): string => {
   return /[\\^$.*+?()[\]{}|]/.test(ch) ? "\\" + ch : ch;
 };
 
+const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+const tryParseDate = (v: unknown): Date | null => {
+  if (v instanceof Date) return v;
+  if (typeof v === "string" && ISO_DATE_REGEX.test(v)) {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  // Only treat numbers as timestamps if they're in a reasonable range
+  // (between year 1970 and year 3000 in milliseconds)
+  if (typeof v === "number") {
+    const MIN_TIMESTAMP = 0; // Jan 1, 1970
+    const MAX_TIMESTAMP = 32503680000000; // Year 3000
+    if (v >= MIN_TIMESTAMP && v <= MAX_TIMESTAMP && Number.isInteger(v)) {
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+  }
+  return null;
+};
+
 const safeCompare = (a: unknown, b: unknown): number => {
+  const aDate = tryParseDate(a);
+  const bDate = tryParseDate(b);
+  if (aDate && bDate) {
+    const aTime = aDate.getTime();
+    const bTime = bDate.getTime();
+    if (aTime < bTime) return -1;
+    if (aTime > bTime) return 1;
+    return 0;
+  }
+
   const tryNumber = (v: unknown) => {
     if (typeof v === "number") return Number.isFinite(v) ? v : NaN;
     if (typeof v === "string") {
@@ -118,6 +149,29 @@ const safeCompare = (a: unknown, b: unknown): number => {
   return 0;
 };
 
+const normalizeForComparison = (v: unknown): string | number | Date | null => {
+  if (v === null || v === undefined) return null;
+  const d = tryParseDate(v);
+  if (d) return d;
+  if (typeof v === "number") return v;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  return String(v);
+};
+
+const isTruthy = (v: unknown): boolean => {
+  if (typeof v === "boolean") return v === true;
+  if (typeof v === "number") return v === 1;
+  if (typeof v === "string") return v.toLowerCase() === "true" || v === "1";
+  return false;
+};
+
+const isFalsy = (v: unknown): boolean => {
+  if (typeof v === "boolean") return v === false;
+  if (typeof v === "number") return v === 0;
+  if (typeof v === "string") return v.toLowerCase() === "false" || v === "0";
+  return false;
+};
+
 export interface OperatorDefinition {
   op: string;
   convert: (lhs: SQLWrapper, rhs: SQLWrapper) => SQLWrapper;
@@ -140,6 +194,7 @@ export const createResourceFilter = <TConfig extends TableConfig>(
   const config = { ...DEFAULT_FILTER_CONFIG, ...filterConfig };
 
   const builtinOperators: OperatorDefinition[] = [
+    // LIKE pattern operators (must be before == and != for parsing priority)
     {
       op: "!%=",
       convert: (lhs, rhs) => sql`${lhs} NOT LIKE ${rhs}`,
@@ -149,15 +204,57 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       },
     },
     {
+      op: "%=",
+      convert: (lhs, rhs) => sql`${lhs} LIKE ${rhs}`,
+      execute: (lhs, rhs) => {
+        const regex = likePatternToRegex(String(rhs));
+        return regex.test(String(lhs));
+      },
+    },
+
+    // Basic equality operators
+    {
       op: "==",
       convert: (lhs, rhs) => eq(lhs, rhs),
-      execute: (lhs, rhs) => String(lhs) === String(rhs),
+      execute: (lhs, rhs) => {
+        // Handle boolean comparisons: true matches true/1/"true"/"1", false matches false/0/"false"/"0"
+        if (rhs === true) {
+          return isTruthy(lhs);
+        }
+        if (rhs === false) {
+          return isFalsy(lhs);
+        }
+        // Handle date comparisons
+        const lhsNorm = normalizeForComparison(lhs);
+        const rhsNorm = normalizeForComparison(rhs);
+        if (lhsNorm instanceof Date && rhsNorm instanceof Date) {
+          return lhsNorm.getTime() === rhsNorm.getTime();
+        }
+        return String(lhs) === String(rhs);
+      },
     },
     {
       op: "!=",
       convert: (lhs, rhs) => not(eq(lhs, rhs)),
-      execute: (lhs, rhs) => String(lhs) !== String(rhs),
+      execute: (lhs, rhs) => {
+        // Handle boolean comparisons
+        if (rhs === true) {
+          return !isTruthy(lhs);
+        }
+        if (rhs === false) {
+          return !isFalsy(lhs);
+        }
+        // Handle date comparisons
+        const lhsNorm = normalizeForComparison(lhs);
+        const rhsNorm = normalizeForComparison(rhs);
+        if (lhsNorm instanceof Date && rhsNorm instanceof Date) {
+          return lhsNorm.getTime() !== rhsNorm.getTime();
+        }
+        return String(lhs) !== String(rhs);
+      },
     },
+
+    // Comparison operators
     {
       op: ">=",
       convert: (lhs, rhs) => sql`${lhs} >= ${rhs}`,
@@ -169,14 +266,6 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       execute: (lhs, rhs) => safeCompare(lhs, rhs) <= 0,
     },
     {
-      op: "%=",
-      convert: (lhs, rhs) => sql`${lhs} LIKE ${rhs}`,
-      execute: (lhs, rhs) => {
-        const regex = likePatternToRegex(String(rhs));
-        return regex.test(String(lhs));
-      },
-    },
-    {
       op: ">",
       convert: (lhs, rhs) => sql`${lhs} > ${rhs}`,
       execute: (lhs, rhs) => safeCompare(lhs, rhs) > 0,
@@ -186,6 +275,8 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       convert: (lhs, rhs) => sql`${lhs} < ${rhs}`,
       execute: (lhs, rhs) => safeCompare(lhs, rhs) < 0,
     },
+
+    // Null check operators
     {
       op: "=isnull=",
       convert: (lhs, rhs) => {
@@ -198,11 +289,35 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       },
     },
     {
+      op: "=isempty=",
+      convert: (lhs, rhs) => {
+        const checkEmpty = String(rhs).toLowerCase() === "true";
+        if (checkEmpty) {
+          return sql`(${lhs} IS NULL OR ${lhs} = '')`;
+        }
+        return sql`(${lhs} IS NOT NULL AND ${lhs} != '')`;
+      },
+      execute: (lhs, rhs) => {
+        const checkEmpty = String(rhs).toLowerCase() === "true";
+        const isEmpty = lhs === null || lhs === undefined || lhs === "";
+        return checkEmpty ? isEmpty : !isEmpty;
+      },
+    },
+
+    // Set membership operators
+    {
       op: "=in=",
       convert: (lhs, rhs) => sql`${lhs} IN (${rhs})`,
       execute: (lhs, rhs) => {
         const arr = Array.isArray(rhs) ? rhs : [rhs];
-        return arr.some((item) => String(item) === String(lhs));
+        const lhsNorm = normalizeForComparison(lhs);
+        return arr.some((item) => {
+          const itemNorm = normalizeForComparison(item);
+          if (lhsNorm instanceof Date && itemNorm instanceof Date) {
+            return lhsNorm.getTime() === itemNorm.getTime();
+          }
+          return String(item) === String(lhs);
+        });
       },
     },
     {
@@ -210,9 +325,182 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       convert: (lhs, rhs) => sql`${lhs} NOT IN (${rhs})`,
       execute: (lhs, rhs) => {
         const arr = Array.isArray(rhs) ? rhs : [rhs];
-        return !arr.some((item) => String(item) === String(lhs));
+        const lhsNorm = normalizeForComparison(lhs);
+        return !arr.some((item) => {
+          const itemNorm = normalizeForComparison(item);
+          if (lhsNorm instanceof Date && itemNorm instanceof Date) {
+            return lhsNorm.getTime() === itemNorm.getTime();
+          }
+          return String(item) === String(lhs);
+        });
       },
     },
+
+    // Case-insensitive equality
+    {
+      op: "=ieq=",
+      convert: (lhs, rhs) => sql`LOWER(${lhs}) = LOWER(${rhs})`,
+      execute: (lhs, rhs) => String(lhs).toLowerCase() === String(rhs).toLowerCase(),
+    },
+    {
+      op: "=ine=",
+      convert: (lhs, rhs) => sql`LOWER(${lhs}) != LOWER(${rhs})`,
+      execute: (lhs, rhs) => String(lhs).toLowerCase() !== String(rhs).toLowerCase(),
+    },
+
+    // Case-insensitive LIKE
+    {
+      op: "=ilike=",
+      convert: (lhs, rhs) => sql`LOWER(${lhs}) LIKE LOWER(${rhs})`,
+      execute: (lhs, rhs) => {
+        const regex = likePatternToRegex(String(rhs).toLowerCase());
+        return regex.test(String(lhs).toLowerCase());
+      },
+    },
+    {
+      op: "=nilike=",
+      convert: (lhs, rhs) => sql`LOWER(${lhs}) NOT LIKE LOWER(${rhs})`,
+      execute: (lhs, rhs) => {
+        const regex = likePatternToRegex(String(rhs).toLowerCase());
+        return !regex.test(String(lhs).toLowerCase());
+      },
+    },
+
+    // String operations
+    {
+      op: "=contains=",
+      convert: (lhs, rhs) => sql`${lhs} LIKE '%' || ${rhs} || '%'`,
+      execute: (lhs, rhs) => String(lhs).includes(String(rhs)),
+    },
+    {
+      op: "=icontains=",
+      convert: (lhs, rhs) => sql`LOWER(${lhs}) LIKE '%' || LOWER(${rhs}) || '%'`,
+      execute: (lhs, rhs) => String(lhs).toLowerCase().includes(String(rhs).toLowerCase()),
+    },
+    {
+      op: "=startswith=",
+      convert: (lhs, rhs) => sql`${lhs} LIKE ${rhs} || '%'`,
+      execute: (lhs, rhs) => String(lhs).startsWith(String(rhs)),
+    },
+    {
+      op: "=istartswith=",
+      convert: (lhs, rhs) => sql`LOWER(${lhs}) LIKE LOWER(${rhs}) || '%'`,
+      execute: (lhs, rhs) => String(lhs).toLowerCase().startsWith(String(rhs).toLowerCase()),
+    },
+    {
+      op: "=endswith=",
+      convert: (lhs, rhs) => sql`${lhs} LIKE '%' || ${rhs}`,
+      execute: (lhs, rhs) => String(lhs).endsWith(String(rhs)),
+    },
+    {
+      op: "=iendswith=",
+      convert: (lhs, rhs) => sql`LOWER(${lhs}) LIKE '%' || LOWER(${rhs})`,
+      execute: (lhs, rhs) => String(lhs).toLowerCase().endsWith(String(rhs).toLowerCase()),
+    },
+
+    // RSQL-style named comparison operators (aliases)
+    {
+      op: "=gt=",
+      convert: (lhs, rhs) => sql`${lhs} > ${rhs}`,
+      execute: (lhs, rhs) => safeCompare(lhs, rhs) > 0,
+    },
+    {
+      op: "=ge=",
+      convert: (lhs, rhs) => sql`${lhs} >= ${rhs}`,
+      execute: (lhs, rhs) => safeCompare(lhs, rhs) >= 0,
+    },
+    {
+      op: "=lt=",
+      convert: (lhs, rhs) => sql`${lhs} < ${rhs}`,
+      execute: (lhs, rhs) => safeCompare(lhs, rhs) < 0,
+    },
+    {
+      op: "=le=",
+      convert: (lhs, rhs) => sql`${lhs} <= ${rhs}`,
+      execute: (lhs, rhs) => safeCompare(lhs, rhs) <= 0,
+    },
+
+    // Range/between operator
+    {
+      op: "=between=",
+      convert: (lhs, rhs) => sql`${lhs} BETWEEN ${rhs}`,
+      execute: (lhs, rhs) => {
+        const arr = Array.isArray(rhs) ? rhs : [];
+        if (arr.length !== 2) return false;
+        return safeCompare(lhs, arr[0]) >= 0 && safeCompare(lhs, arr[1]) <= 0;
+      },
+    },
+    {
+      op: "=nbetween=",
+      convert: (lhs, rhs) => sql`${lhs} NOT BETWEEN ${rhs}`,
+      execute: (lhs, rhs) => {
+        const arr = Array.isArray(rhs) ? rhs : [];
+        if (arr.length !== 2) return true;
+        return safeCompare(lhs, arr[0]) < 0 || safeCompare(lhs, arr[1]) > 0;
+      },
+    },
+
+    // Regex matching (JavaScript only, falls back to LIKE for SQL)
+    {
+      op: "=regex=",
+      convert: (lhs, rhs) => {
+        // SQLite doesn't support native regex, use GLOB as approximation
+        // For full regex support, use a custom operator with extension
+        return sql`${lhs} GLOB ${rhs}`;
+      },
+      execute: (lhs, rhs) => {
+        try {
+          const regex = new RegExp(String(rhs));
+          return regex.test(String(lhs));
+        } catch {
+          return false;
+        }
+      },
+    },
+    {
+      op: "=iregex=",
+      convert: (lhs, rhs) => {
+        return sql`LOWER(${lhs}) GLOB LOWER(${rhs})`;
+      },
+      execute: (lhs, rhs) => {
+        try {
+          const regex = new RegExp(String(rhs), "i");
+          return regex.test(String(lhs));
+        } catch {
+          return false;
+        }
+      },
+    },
+
+    // Length operators
+    {
+      op: "=length=",
+      convert: (lhs, rhs) => sql`LENGTH(${lhs}) = ${rhs}`,
+      execute: (lhs, rhs) => {
+        const len = String(lhs).length;
+        const expected = typeof rhs === "number" ? rhs : parseInt(String(rhs), 10);
+        return len === expected;
+      },
+    },
+    {
+      op: "=minlength=",
+      convert: (lhs, rhs) => sql`LENGTH(${lhs}) >= ${rhs}`,
+      execute: (lhs, rhs) => {
+        const len = String(lhs).length;
+        const min = typeof rhs === "number" ? rhs : parseInt(String(rhs), 10);
+        return len >= min;
+      },
+    },
+    {
+      op: "=maxlength=",
+      convert: (lhs, rhs) => sql`LENGTH(${lhs}) <= ${rhs}`,
+      execute: (lhs, rhs) => {
+        const len = String(lhs).length;
+        const max = typeof rhs === "number" ? rhs : parseInt(String(rhs), 10);
+        return len <= max;
+      },
+    },
+
   ];
 
   const customOperatorsList: OperatorDefinition[] = Object.entries(
@@ -339,6 +627,42 @@ export const createResourceFilter = <TConfig extends TableConfig>(
 
     execute(_object: SchemaType): unknown {
       return null;
+    }
+  }
+
+  class DateFilterValue extends FilterValue {
+    constructor(private value: Date) {
+      super();
+    }
+
+    print(): string {
+      return this.value.toISOString();
+    }
+
+    convert(): SQLWrapper {
+      return sql`${this.value.toISOString()}`;
+    }
+
+    execute(_object: SchemaType): unknown {
+      return this.value;
+    }
+  }
+
+  class RangeFilterValue extends FilterValue {
+    constructor(private start: FilterValue, private end: FilterValue) {
+      super();
+    }
+
+    print(): string {
+      return `[${this.start.print()}, ${this.end.print()}]`;
+    }
+
+    convert(): SQLWrapper {
+      return sql`${this.start.convert()} AND ${this.end.convert()}`;
+    }
+
+    execute(object: SchemaType): unknown {
+      return [this.start.execute(object), this.end.execute(object)];
     }
   }
 
@@ -529,7 +853,7 @@ export const createResourceFilter = <TConfig extends TableConfig>(
 
   const parseStringValue = (
     expression: string
-  ): { value: StringFilterValue; remaining: string } => {
+  ): { value: FilterValue; remaining: string } => {
     if (expression[0] !== '"') {
       throw new FilterParseError("Invalid string value start");
     }
@@ -550,6 +874,13 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       .replace(/\\\\/g, "\\");
 
     const remaining = expression.slice(i + 1);
+
+    // Check if the string is an ISO date
+    const dateVal = tryParseDate(value);
+    if (dateVal) {
+      return { value: new DateFilterValue(dateVal), remaining };
+    }
+
     return { value: new StringFilterValue(value), remaining };
   };
 
@@ -609,6 +940,8 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       return parseNumberValue(expression);
     } else if (expression[0] === "(") {
       return parseSetValue(expression);
+    } else if (expression[0] === "[") {
+      return parseRangeValue(expression);
     } else if (expression.startsWith("true")) {
       const nextChar = expression[4];
       if (!nextChar || !isAlNum(nextChar)) {
@@ -653,6 +986,41 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       throw new FilterParseError("Unterminated set value");
     }
     const remaining = expr.slice(1);
+    return { value: new SetFilterValue(values), remaining };
+  };
+
+  const parseRangeValue = (
+    expression: string
+  ): { value: SetFilterValue; remaining: string } => {
+    if (expression[0] !== "[") {
+      throw new FilterParseError("Invalid range value start");
+    }
+    const values: FilterValue[] = [];
+    let expr = skipWhitespace(expression.slice(1));
+
+    // Parse first value
+    const { value: firstValue, remaining: rem1 } = parseValue(expr);
+    values.push(firstValue);
+    expr = skipWhitespace(rem1);
+
+    // Expect comma
+    if (expr[0] !== ",") {
+      throw new FilterParseError("Range must have exactly two values separated by comma");
+    }
+    expr = skipWhitespace(expr.slice(1));
+
+    // Parse second value
+    const { value: secondValue, remaining: rem2 } = parseValue(expr);
+    values.push(secondValue);
+    expr = skipWhitespace(rem2);
+
+    // Expect closing bracket
+    if (expr[0] !== "]") {
+      throw new FilterParseError("Unterminated range value");
+    }
+
+    const remaining = expr.slice(1);
+    // Return as SetFilterValue so it works with existing between operator
     return { value: new SetFilterValue(values), remaining };
   };
 

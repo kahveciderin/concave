@@ -693,4 +693,359 @@ describe("Filter System", () => {
       expect(filter.execute("score<85.12345679", testItem)).toBe(true);
     });
   });
+
+  describe("Date Filtering", () => {
+    it("should parse ISO date strings and compare correctly", () => {
+      const testItem = { id: 1, createdAt: "2024-06-15T10:30:00.000Z" };
+
+      expect(filter.execute('createdAt=="2024-06-15T10:30:00.000Z"', testItem)).toBe(true);
+      expect(filter.execute('createdAt>"2024-06-14T10:30:00.000Z"', testItem)).toBe(true);
+      expect(filter.execute('createdAt<"2024-06-16T10:30:00.000Z"', testItem)).toBe(true);
+      expect(filter.execute('createdAt>="2024-06-15T10:30:00.000Z"', testItem)).toBe(true);
+      expect(filter.execute('createdAt<="2024-06-15T10:30:00.000Z"', testItem)).toBe(true);
+    });
+
+    it("should handle date-only format", () => {
+      const testItem = { id: 1, createdAt: "2024-06-15" };
+
+      expect(filter.execute('createdAt=="2024-06-15"', testItem)).toBe(true);
+      expect(filter.execute('createdAt>"2024-06-14"', testItem)).toBe(true);
+      expect(filter.execute('createdAt<"2024-06-16"', testItem)).toBe(true);
+    });
+
+    it("should compare dates across formats", () => {
+      const testItem = { id: 1, createdAt: "2024-06-15T00:00:00.000Z" };
+
+      // Comparing full ISO with date-only (dates at midnight should match)
+      expect(filter.execute('createdAt>="2024-06-15"', testItem)).toBe(true);
+    });
+
+    it("should work with =gt=, =lt=, =ge=, =le= operators on dates", () => {
+      const testItem = { id: 1, createdAt: "2024-06-15T10:30:00.000Z" };
+
+      expect(filter.execute('createdAt=gt="2024-06-14"', testItem)).toBe(true);
+      expect(filter.execute('createdAt=lt="2024-06-16"', testItem)).toBe(true);
+      expect(filter.execute('createdAt=ge="2024-06-15"', testItem)).toBe(true);
+      expect(filter.execute('createdAt=le="2024-06-16"', testItem)).toBe(true);
+    });
+
+    it("should handle date in =in= operator", () => {
+      const testItem = { id: 1, createdAt: "2024-06-15T10:30:00.000Z" };
+
+      expect(filter.execute('createdAt=in=("2024-06-15T10:30:00.000Z", "2024-06-16T10:30:00.000Z")', testItem)).toBe(true);
+      expect(filter.execute('createdAt=in=("2024-06-14T10:30:00.000Z", "2024-06-16T10:30:00.000Z")', testItem)).toBe(false);
+    });
+  });
+
+  describe("String Operators", () => {
+    describe("=contains=", () => {
+      it("should match substring", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=contains="World"', testItem)).toBe(true);
+        expect(filter.execute('name=contains="Hello"', testItem)).toBe(true);
+        expect(filter.execute('name=contains="lo Wo"', testItem)).toBe(true);
+        expect(filter.execute('name=contains="Goodbye"', testItem)).toBe(false);
+      });
+
+      it("should be case-sensitive", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=contains="world"', testItem)).toBe(false);
+        expect(filter.execute('name=contains="HELLO"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=icontains=", () => {
+      it("should match substring case-insensitively", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=icontains="world"', testItem)).toBe(true);
+        expect(filter.execute('name=icontains="HELLO"', testItem)).toBe(true);
+        expect(filter.execute('name=icontains="LO WO"', testItem)).toBe(true);
+        expect(filter.execute('name=icontains="goodbye"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=startswith=", () => {
+      it("should match prefix", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=startswith="Hello"', testItem)).toBe(true);
+        expect(filter.execute('name=startswith="Hell"', testItem)).toBe(true);
+        expect(filter.execute('name=startswith="World"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=istartswith=", () => {
+      it("should match prefix case-insensitively", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=istartswith="hello"', testItem)).toBe(true);
+        expect(filter.execute('name=istartswith="HELLO"', testItem)).toBe(true);
+        expect(filter.execute('name=istartswith="world"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=endswith=", () => {
+      it("should match suffix", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=endswith="World"', testItem)).toBe(true);
+        expect(filter.execute('name=endswith="orld"', testItem)).toBe(true);
+        expect(filter.execute('name=endswith="Hello"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=iendswith=", () => {
+      it("should match suffix case-insensitively", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=iendswith="world"', testItem)).toBe(true);
+        expect(filter.execute('name=iendswith="WORLD"', testItem)).toBe(true);
+        expect(filter.execute('name=iendswith="hello"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=ilike=", () => {
+      it("should match pattern case-insensitively", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=ilike="%WORLD"', testItem)).toBe(true);
+        expect(filter.execute('name=ilike="hello%"', testItem)).toBe(true);
+        expect(filter.execute('name=ilike="%LO WO%"', testItem)).toBe(true);
+      });
+    });
+
+    describe("=nilike=", () => {
+      it("should NOT match pattern case-insensitively", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=nilike="%goodbye%"', testItem)).toBe(true);
+        expect(filter.execute('name=nilike="%world"', testItem)).toBe(false);
+      });
+    });
+  });
+
+  describe("Case-Insensitive Equality", () => {
+    describe("=ieq=", () => {
+      it("should match equality case-insensitively", () => {
+        const testItem = { id: 1, status: "Active" };
+
+        expect(filter.execute('status=ieq="active"', testItem)).toBe(true);
+        expect(filter.execute('status=ieq="ACTIVE"', testItem)).toBe(true);
+        expect(filter.execute('status=ieq="AcTiVe"', testItem)).toBe(true);
+        expect(filter.execute('status=ieq="inactive"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=ine=", () => {
+      it("should match inequality case-insensitively", () => {
+        const testItem = { id: 1, status: "Active" };
+
+        expect(filter.execute('status=ine="inactive"', testItem)).toBe(true);
+        expect(filter.execute('status=ine="INACTIVE"', testItem)).toBe(true);
+        expect(filter.execute('status=ine="active"', testItem)).toBe(false);
+      });
+    });
+  });
+
+  describe("Null and Empty Checks", () => {
+    describe("=isempty=", () => {
+      it("should detect empty strings", () => {
+        const testItem = { id: 1, name: "", description: null, title: "Hello" };
+
+        expect(filter.execute('name=isempty=true', testItem)).toBe(true);
+        expect(filter.execute('title=isempty=true', testItem)).toBe(false);
+        expect(filter.execute('title=isempty=false', testItem)).toBe(true);
+      });
+
+      it("should detect null values as empty", () => {
+        const testItem = { id: 1, description: null };
+
+        expect(filter.execute('description=isempty=true', testItem)).toBe(true);
+        expect(filter.execute('description=isempty=false', testItem)).toBe(false);
+      });
+
+      it("should detect undefined values as empty", () => {
+        const testItem = { id: 1 };
+
+        expect(filter.execute('description=isempty=true', testItem)).toBe(true);
+      });
+    });
+  });
+
+  describe("Range/Between Operators", () => {
+    describe("=between=", () => {
+      it("should match values within numeric range", () => {
+        const testItem = { id: 1, age: 25 };
+
+        expect(filter.execute('age=between=[18, 30]', testItem)).toBe(true);
+        expect(filter.execute('age=between=[26, 30]', testItem)).toBe(false);
+        expect(filter.execute('age=between=[18, 24]', testItem)).toBe(false);
+      });
+
+      it("should include boundary values", () => {
+        const testItem = { id: 1, age: 25 };
+
+        expect(filter.execute('age=between=[25, 30]', testItem)).toBe(true);
+        expect(filter.execute('age=between=[18, 25]', testItem)).toBe(true);
+      });
+
+      it("should work with date ranges", () => {
+        const testItem = { id: 1, createdAt: "2024-06-15T10:30:00.000Z" };
+
+        expect(filter.execute('createdAt=between=["2024-06-01", "2024-06-30"]', testItem)).toBe(true);
+        expect(filter.execute('createdAt=between=["2024-07-01", "2024-07-31"]', testItem)).toBe(false);
+      });
+
+      it("should work with set syntax too", () => {
+        const testItem = { id: 1, age: 25 };
+
+        expect(filter.execute('age=between=(18, 30)', testItem)).toBe(true);
+      });
+    });
+
+    describe("=nbetween=", () => {
+      it("should match values outside range", () => {
+        const testItem = { id: 1, age: 25 };
+
+        expect(filter.execute('age=nbetween=[30, 40]', testItem)).toBe(true);
+        expect(filter.execute('age=nbetween=[18, 30]', testItem)).toBe(false);
+      });
+    });
+  });
+
+  describe("Regex Operators", () => {
+    describe("=regex=", () => {
+      it("should match regular expressions", () => {
+        const testItem = { id: 1, email: "user@example.com" };
+
+        expect(filter.execute('email=regex="^user@"', testItem)).toBe(true);
+        expect(filter.execute('email=regex=".*@example\\.com$"', testItem)).toBe(true);
+        expect(filter.execute('email=regex="^admin@"', testItem)).toBe(false);
+      });
+
+      it("should be case-sensitive", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=regex="^Hello"', testItem)).toBe(true);
+        expect(filter.execute('name=regex="^hello"', testItem)).toBe(false);
+      });
+    });
+
+    describe("=iregex=", () => {
+      it("should match regular expressions case-insensitively", () => {
+        const testItem = { id: 1, name: "Hello World" };
+
+        expect(filter.execute('name=iregex="^hello"', testItem)).toBe(true);
+        expect(filter.execute('name=iregex="WORLD$"', testItem)).toBe(true);
+      });
+    });
+  });
+
+  describe("Length Operators", () => {
+    describe("=length=", () => {
+      it("should match exact string length", () => {
+        const testItem = { id: 1, code: "ABC123" };
+
+        expect(filter.execute('code=length=6', testItem)).toBe(true);
+        expect(filter.execute('code=length=5', testItem)).toBe(false);
+        expect(filter.execute('code=length=7', testItem)).toBe(false);
+      });
+    });
+
+    describe("=minlength=", () => {
+      it("should match minimum string length", () => {
+        const testItem = { id: 1, password: "secret123" };
+
+        expect(filter.execute('password=minlength=8', testItem)).toBe(true);
+        expect(filter.execute('password=minlength=9', testItem)).toBe(true);
+        expect(filter.execute('password=minlength=10', testItem)).toBe(false);
+      });
+    });
+
+    describe("=maxlength=", () => {
+      it("should match maximum string length", () => {
+        const testItem = { id: 1, username: "john" };
+
+        expect(filter.execute('username=maxlength=10', testItem)).toBe(true);
+        expect(filter.execute('username=maxlength=4', testItem)).toBe(true);
+        expect(filter.execute('username=maxlength=3', testItem)).toBe(false);
+      });
+    });
+  });
+
+  describe("Boolean Comparisons", () => {
+    describe("==true", () => {
+      it("should match true boolean values", () => {
+        expect(filter.execute('active==true', { id: 1, active: true })).toBe(true);
+        expect(filter.execute('active==true', { id: 1, active: false })).toBe(false);
+      });
+
+      it("should match truthy number values (1)", () => {
+        expect(filter.execute('active==true', { id: 1, active: 1 })).toBe(true);
+        expect(filter.execute('active==true', { id: 1, active: 0 })).toBe(false);
+      });
+
+      it("should match truthy string values", () => {
+        expect(filter.execute('active==true', { id: 1, active: "true" })).toBe(true);
+        expect(filter.execute('active==true', { id: 1, active: "1" })).toBe(true);
+        expect(filter.execute('active==true', { id: 1, active: "false" })).toBe(false);
+      });
+    });
+
+    describe("==false", () => {
+      it("should match false boolean values", () => {
+        expect(filter.execute('active==false', { id: 1, active: false })).toBe(true);
+        expect(filter.execute('active==false', { id: 1, active: true })).toBe(false);
+      });
+
+      it("should match falsy number values (0)", () => {
+        expect(filter.execute('active==false', { id: 1, active: 0 })).toBe(true);
+        expect(filter.execute('active==false', { id: 1, active: 1 })).toBe(false);
+      });
+
+      it("should match falsy string values", () => {
+        expect(filter.execute('active==false', { id: 1, active: "false" })).toBe(true);
+        expect(filter.execute('active==false', { id: 1, active: "0" })).toBe(true);
+        expect(filter.execute('active==false', { id: 1, active: "true" })).toBe(false);
+      });
+    });
+
+    describe("!=true and !=false", () => {
+      it("should negate boolean comparisons", () => {
+        expect(filter.execute('active!=true', { id: 1, active: false })).toBe(true);
+        expect(filter.execute('active!=true', { id: 1, active: true })).toBe(false);
+        expect(filter.execute('active!=false', { id: 1, active: true })).toBe(true);
+        expect(filter.execute('active!=false', { id: 1, active: false })).toBe(false);
+      });
+    });
+  });
+
+  describe("RSQL Named Comparison Operators", () => {
+    it("should support =gt= for greater than", () => {
+      const testItem = { id: 1, age: 25 };
+      expect(filter.execute('age=gt=20', testItem)).toBe(true);
+      expect(filter.execute('age=gt=25', testItem)).toBe(false);
+    });
+
+    it("should support =ge= for greater than or equal", () => {
+      const testItem = { id: 1, age: 25 };
+      expect(filter.execute('age=ge=25', testItem)).toBe(true);
+      expect(filter.execute('age=ge=26', testItem)).toBe(false);
+    });
+
+    it("should support =lt= for less than", () => {
+      const testItem = { id: 1, age: 25 };
+      expect(filter.execute('age=lt=30', testItem)).toBe(true);
+      expect(filter.execute('age=lt=25', testItem)).toBe(false);
+    });
+
+    it("should support =le= for less than or equal", () => {
+      const testItem = { id: 1, age: 25 };
+      expect(filter.execute('age=le=25', testItem)).toBe(true);
+      expect(filter.execute('age=le=24', testItem)).toBe(false);
+    });
+  });
 });
