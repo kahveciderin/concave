@@ -75,6 +75,12 @@ import { createScopeResolver, combineScopes, Operation } from "@/auth/scope";
 import { AuthenticatedRequest } from "@/auth/types";
 import { createRateLimiter, createOperationRateLimiter } from "@/middleware/rateLimit";
 import { asyncHandler } from "@/middleware/error";
+import {
+  parseInclude,
+  RelationLoader,
+  RelationsConfig,
+  IncludeConfig,
+} from "./relations";
 
 const DEFAULT_BATCH_LIMITS = {
   create: 100,
@@ -88,6 +94,13 @@ const DEFAULT_PAGINATION = {
   maxLimit: 100,
 };
 
+const resourceRegistry = new Map<
+  string,
+  { schema: Table<TableConfig>; config: { relations?: RelationsConfig } }
+>();
+
+export const getResourceRegistry = () => resourceRegistry;
+
 export const useResource = <TConfig extends TableConfig>(
   schema: Table<TConfig>,
   config: ResourceConfig<TConfig, Table<TConfig>>
@@ -95,6 +108,21 @@ export const useResource = <TConfig extends TableConfig>(
   const db = config.db;
   const resourceName = getTableName(schema);
   const idColumnName = config.id.name;
+
+  resourceRegistry.set(resourceName, {
+    schema: schema as Table<TableConfig>,
+    config: { relations: config.relations as RelationsConfig | undefined },
+  });
+
+  const relationLoader = config.relations
+    ? new RelationLoader(
+        db,
+        schema as Table<TableConfig>,
+        config.relations as RelationsConfig<TableConfig>,
+        resourceRegistry,
+        config.include
+      )
+    : null;
 
   const router = Router();
 
@@ -449,22 +477,29 @@ export const useResource = <TConfig extends TableConfig>(
         queuedBytes = 0;
       });
 
-      if (resumeFrom !== undefined) {
-        if (await changelog.needsInvalidation(resumeFrom)) {
-          await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
-        }
-      } else {
-        const combinedFilter = combineScopes(scope, filterQuery);
-        const filter = combinedFilter && combinedFilter !== "*"
-          ? (filterer.convert(combinedFilter) as SQL<unknown>)
-          : undefined;
+      try {
+        if (resumeFrom !== undefined) {
+          if (await changelog.needsInvalidation(resumeFrom)) {
+            await sendInvalidateEvent(subscriptionId, "Sequence gap - please refetch");
+          }
+        } else {
+          const combinedFilter = combineScopes(scope, filterQuery);
+          const filter = combinedFilter && combinedFilter !== "*"
+            ? (filterer.convert(combinedFilter) as SQL<unknown>)
+            : undefined;
 
-        const items = await db.select().from(schema).where(filter);
-        await sendExistingItems(
-          subscriptionId,
-          items as Record<string, unknown>[],
-          idColumnName
-        );
+          const items = await db.select().from(schema).where(filter);
+          await sendExistingItems(
+            subscriptionId,
+            items as Record<string, unknown>[],
+            idColumnName
+          );
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error";
+        res.write(`event: error\ndata: ${JSON.stringify({ error: errorMessage })}\n\n`);
+        res.end();
+        return;
       }
 
       const cleanup = async () => {
@@ -605,6 +640,7 @@ export const useResource = <TConfig extends TableConfig>(
       const paginationParams = pagination.parseParams(req.query as Record<string, unknown>);
       const selectFields = parseSelect(req.query.select?.toString());
       const includeTotalCount = req.query.totalCount === "true";
+      const includeSpecs = parseInclude(req.query.include?.toString());
 
       const orderByFields = parseOrderBy(paginationParams.orderBy);
 
@@ -636,7 +672,7 @@ export const useResource = <TConfig extends TableConfig>(
 
       query = query.limit(paginationParams.limit + 1) as any;
 
-      const items = await query;
+      let items = await query;
 
       let totalCount: number | undefined;
       if (includeTotalCount) {
@@ -655,6 +691,14 @@ export const useResource = <TConfig extends TableConfig>(
         totalCount
       );
 
+      if (relationLoader && includeSpecs.length > 0) {
+        result.items = await relationLoader.loadRelationsForItems(
+          result.items,
+          includeSpecs,
+          idColumnName
+        );
+      }
+
       if (selectFields) {
         result.items = applyProjection(result.items, selectFields) as any;
       }
@@ -669,6 +713,7 @@ export const useResource = <TConfig extends TableConfig>(
       const id = req.params.id as string;
       const filter = await applyFilters(req, "read", `${idColumnName}=="${id}"`);
       const selectFields = parseSelect(req.query.select?.toString());
+      const includeSpecs = parseInclude(req.query.include?.toString());
 
       const selectResult = await db.select().from(schema).where(filter);
       const item = (selectResult as any[])[0];
@@ -678,8 +723,17 @@ export const useResource = <TConfig extends TableConfig>(
       }
 
       let result = item;
+
+      if (relationLoader && includeSpecs.length > 0) {
+        result = await relationLoader.loadRelationsForItem(
+          result as Record<string, unknown>,
+          includeSpecs,
+          idColumnName
+        );
+      }
+
       if (selectFields) {
-        result = applyProjection([item], selectFields)[0] as typeof item;
+        result = applyProjection([result], selectFields)[0] as typeof item;
       }
 
       res.json(result);

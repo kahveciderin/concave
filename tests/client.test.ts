@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { FetchTransport, TransportError } from "@/client/transport";
 import { InMemoryOfflineStorage, OfflineManager } from "@/client/offline";
+import { Repository } from "@/client/repository";
 
 describe("Client Library", () => {
   describe("FetchTransport", () => {
@@ -170,6 +171,101 @@ describe("Client Library", () => {
       });
 
       expect(manager.getIsOnline()).toBe(true);
+    });
+  });
+
+  describe("Repository", () => {
+    const createMockTransport = () => ({
+      request: vi.fn().mockResolvedValue({
+        data: { items: [], hasMore: false, nextCursor: null },
+        status: 200,
+        headers: new Headers(),
+      }),
+    });
+
+    it("should pass include param in list options", async () => {
+      const transport = createMockTransport();
+      const repo = new Repository<{ id: string; name: string }>({
+        transport: transport as any,
+        resourcePath: "/posts",
+      });
+
+      await repo.list({ include: "author,tags" });
+
+      expect(transport.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          path: "/posts",
+          params: expect.objectContaining({
+            include: "author,tags",
+          }),
+        })
+      );
+    });
+
+    it("should pass include param in get options", async () => {
+      const transport = createMockTransport();
+      transport.request.mockResolvedValue({
+        data: { id: "1", name: "Test" },
+        status: 200,
+        headers: new Headers(),
+      });
+
+      const repo = new Repository<{ id: string; name: string }>({
+        transport: transport as any,
+        resourcePath: "/posts",
+      });
+
+      await repo.get("1", { include: "author,comments" });
+
+      expect(transport.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "GET",
+          path: "/posts/1",
+          params: expect.objectContaining({
+            include: "author,comments",
+          }),
+        })
+      );
+    });
+
+    it("should combine include with select and filter in list", async () => {
+      const transport = createMockTransport();
+      const repo = new Repository<{ id: string; name: string }>({
+        transport: transport as any,
+        resourcePath: "/posts",
+      });
+
+      await repo.list({
+        filter: 'status=="active"',
+        select: ["id", "title"],
+        include: "author",
+        limit: 10,
+      });
+
+      expect(transport.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          params: expect.objectContaining({
+            filter: 'status=="active"',
+            select: "id,title",
+            include: "author",
+            limit: 10,
+          }),
+        })
+      );
+    });
+
+    it("should not include param when not specified", async () => {
+      const transport = createMockTransport();
+      const repo = new Repository<{ id: string; name: string }>({
+        transport: transport as any,
+        resourcePath: "/posts",
+      });
+
+      await repo.list({ filter: 'status=="active"' });
+
+      const params = transport.request.mock.calls[0][0].params;
+      expect(params.include).toBeUndefined();
     });
   });
 });

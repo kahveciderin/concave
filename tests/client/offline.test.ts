@@ -7,6 +7,88 @@ import {
 } from "../../src/client/offline";
 import { OfflineMutation } from "../../src/client/types";
 
+describe("OfflineManager.hasPendingMutationsForId", () => {
+  it("should return true for pending create mutation with matching optimisticId", async () => {
+    const manager = createOfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+    });
+
+    await manager.queueMutation("create", "/todos", { title: "Test" }, undefined, "opt_123");
+
+    expect(await manager.hasPendingMutationsForId("opt_123")).toBe(true);
+    expect(await manager.hasPendingMutationsForId("other")).toBe(false);
+  });
+
+  it("should return true for pending update mutation with matching objectId", async () => {
+    const manager = createOfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+    });
+
+    await manager.queueMutation("update", "/todos", { completed: true }, "todo_123");
+
+    expect(await manager.hasPendingMutationsForId("todo_123")).toBe(true);
+    expect(await manager.hasPendingMutationsForId("other")).toBe(false);
+  });
+
+  it("should return true when querying by optimisticId that resolves to objectId", async () => {
+    const manager = createOfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+    });
+
+    // Register ID mapping
+    manager.registerIdMapping("opt_123", "srv_456");
+
+    // Queue update with server ID
+    await manager.queueMutation("update", "/todos", { completed: true }, "srv_456");
+
+    // Query by optimistic ID should still find it (via resolveId)
+    expect(await manager.hasPendingMutationsForId("opt_123")).toBe(true);
+    expect(await manager.hasPendingMutationsForId("srv_456")).toBe(true);
+  });
+
+  it("should return false for synced mutations", async () => {
+    const storage = new InMemoryOfflineStorage();
+    const manager = createOfflineManager({
+      config: { enabled: true, storage },
+    });
+
+    await manager.queueMutation("create", "/todos", { title: "Test" }, undefined, "opt_123");
+
+    // Mark as synced by removing
+    const mutations = await storage.getMutations();
+    await storage.removeMutation(mutations[0].id);
+
+    expect(await manager.hasPendingMutationsForId("opt_123")).toBe(false);
+  });
+
+  it("should return true for failed mutations (will be retried)", async () => {
+    const storage = new InMemoryOfflineStorage();
+    const manager = createOfflineManager({
+      config: { enabled: true, storage },
+    });
+
+    await manager.queueMutation("update", "/todos", { completed: true }, "todo_123");
+
+    // Mark as failed
+    const mutations = await storage.getMutations();
+    await storage.updateMutation(mutations[0].id, { status: "failed" });
+
+    expect(await manager.hasPendingMutationsForId("todo_123")).toBe(true);
+  });
+
+  it("should handle multiple mutations for same item", async () => {
+    const manager = createOfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+    });
+
+    // Create then update
+    await manager.queueMutation("create", "/todos", { title: "Test" }, undefined, "opt_123");
+    await manager.queueMutation("update", "/todos", { completed: true }, "opt_123");
+
+    expect(await manager.hasPendingMutationsForId("opt_123")).toBe(true);
+  });
+});
+
 describe("InMemoryOfflineStorage", () => {
   let storage: InMemoryOfflineStorage;
 

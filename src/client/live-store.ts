@@ -26,6 +26,7 @@ export interface LiveQuery<T extends { id: string }> {
 
 export interface LiveQueryOptions {
   filter?: string;
+  include?: string;
   orderBy?: string;
   limit?: number;
 }
@@ -63,6 +64,8 @@ export const createLiveQuery = <T extends { id: string }>(
     onAuthError?: () => void;
     getPendingCount?: () => Promise<number>;
     onIdRemapped?: (optimisticId: string, serverId: string) => void;
+    getIdMappings?: () => Map<string, string>;
+    hasPendingMutationsForId?: (id: string) => Promise<boolean>;
   }
 ): LiveQuery<T> => {
   const cache = new Map<string, T>();
@@ -139,7 +142,83 @@ export const createLiveQuery = <T extends { id: string }>(
     notify();
   };
 
+  const handleExisting = async (item: T) => {
+    // Check if this item's ID is a server ID that maps to an optimistic ID
+    // This handles the case where the subscription reconnects after offline sync
+    // and the added event with optimisticId metadata was missed
+
+    // Find the optimistic ID that maps to this server ID
+    let mappedOptimisticId: string | undefined;
+
+    // First check our local idMappings
+    const localMappedOptimisticId = Array.from(idMappings.entries()).find(
+      ([serverId]) => serverId === item.id
+    )?.[1];
+
+    if (localMappedOptimisticId) {
+      mappedOptimisticId = localMappedOptimisticId;
+    }
+
+    // Also check external ID mappings (from OfflineManager)
+    if (!mappedOptimisticId && callbacks?.getIdMappings) {
+      const externalMappings = callbacks.getIdMappings();
+      // externalMappings is optimisticId -> serverId, so we need to find by serverId
+      for (const [optimisticId, serverId] of externalMappings) {
+        if (serverId === item.id) {
+          mappedOptimisticId = optimisticId;
+          break;
+        }
+      }
+    }
+
+    // If we found a mapping and have the optimistic item in cache
+    if (mappedOptimisticId && cache.has(mappedOptimisticId)) {
+      // Check if there are pending mutations for this item
+      // If so, DON'T replace - keep the optimistic state until mutations sync
+      if (callbacks?.hasPendingMutationsForId) {
+        const hasPending = await callbacks.hasPendingMutationsForId(mappedOptimisticId);
+        if (hasPending) {
+          // Don't replace optimistic item - it has pending changes
+          // Update our local idMappings for when the mutations complete
+          idMappings.set(item.id, mappedOptimisticId);
+          return;
+        }
+      }
+
+      // No pending mutations - safe to replace
+      cache.delete(mappedOptimisticId);
+      optimisticIds.delete(mappedOptimisticId);
+      idMappings.set(item.id, mappedOptimisticId);
+    }
+
+    cache.set(item.id, item);
+    notify();
+  };
+
   const handleChange = (item: T) => {
+    // Check if this change is for an item that was optimistically created
+    // If so, we need to clean up the optimistic entry
+    const mappedOptimisticId = Array.from(idMappings.entries()).find(
+      ([serverId]) => serverId === item.id
+    )?.[1];
+
+    if (mappedOptimisticId && cache.has(mappedOptimisticId)) {
+      cache.delete(mappedOptimisticId);
+      optimisticIds.delete(mappedOptimisticId);
+    }
+
+    // Also check external mappings
+    if (callbacks?.getIdMappings) {
+      const externalMappings = callbacks.getIdMappings();
+      for (const [optimisticId, serverId] of externalMappings) {
+        if (serverId === item.id && cache.has(optimisticId)) {
+          cache.delete(optimisticId);
+          optimisticIds.delete(optimisticId);
+          idMappings.set(item.id, optimisticId);
+        }
+      }
+    }
+
     cache.set(item.id, item);
     notify();
   };
@@ -179,6 +258,7 @@ export const createLiveQuery = <T extends { id: string }>(
 
   const subscriptionCallbacks: SubscriptionCallbacks<T> = {
     onAdded: handleAdd,
+    onExisting: handleExisting,
     onChanged: handleChange,
     onRemoved: handleRemove,
     onInvalidate: handleInvalidate,
@@ -192,6 +272,7 @@ export const createLiveQuery = <T extends { id: string }>(
     try {
       const listOptions: ListOptions = {};
       if (options.filter) listOptions.filter = options.filter;
+      if (options.include) listOptions.include = options.include;
       if (options.orderBy) listOptions.orderBy = options.orderBy;
       if (options.limit) listOptions.limit = options.limit;
 
@@ -222,6 +303,7 @@ export const createLiveQuery = <T extends { id: string }>(
 
     const subscribeOptions: SubscribeOptions = {};
     if (options.filter) subscribeOptions.filter = options.filter;
+    if (options.include) subscribeOptions.include = options.include;
 
     subscription = repo.subscribe(subscribeOptions, subscriptionCallbacks);
     await updatePendingCount();

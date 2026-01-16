@@ -1,6 +1,364 @@
 # Authentication
 
-Concave provides a complete authentication system with standard routes, session management, and authorization scopes.
+Concave provides a complete authentication system built on OpenID Connect (OIDC). The framework can act as its own OIDC Provider, giving you standard OAuth2/OIDC flows, JWT tokens, and compatibility with any OIDC client.
+
+## OIDC Provider (Recommended)
+
+The OIDC provider gives you a complete identity server with standard endpoints, PKCE support, and pluggable authentication backends.
+
+### Quick Setup
+
+```typescript
+import express from "express";
+import { createOIDCProvider } from "concave";
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+const { router, middleware } = createOIDCProvider({
+  issuer: "https://auth.myapp.com",
+  keys: { algorithm: "RS256" },
+  tokens: {
+    accessToken: { ttlSeconds: 3600 },
+    refreshToken: { ttlSeconds: 30 * 24 * 3600, rotateOnUse: true },
+  },
+  clients: [
+    {
+      id: "web-app",
+      name: "My Web App",
+      redirectUris: ["https://myapp.com/callback"],
+      postLogoutRedirectUris: ["https://myapp.com"],
+      grantTypes: ["authorization_code", "refresh_token"],
+      responseTypes: ["code"],
+      tokenEndpointAuthMethod: "none", // Public client, PKCE required
+      scopes: ["openid", "profile", "email", "offline_access"],
+    },
+  ],
+  backends: {
+    emailPassword: {
+      enabled: true,
+      validateUser: async (email, password) => {
+        const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+        if (user && await bcrypt.compare(password, user.passwordHash)) {
+          return { id: user.id, email: user.email, name: user.name };
+        }
+        return null;
+      },
+      findUserById: async (id) => {
+        const user = await db.query.users.findFirst({ where: eq(users.id, id) });
+        return user ? { id: user.id, email: user.email, name: user.name } : null;
+      },
+    },
+  },
+});
+
+// Mount OIDC routes at /oidc
+app.use("/oidc", router);
+
+// Protect API routes with the middleware
+app.use("/api", middleware, apiRoutes);
+```
+
+### OIDC Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/.well-known/openid-configuration` | GET | Discovery document |
+| `/authorize` | GET | Authorization code flow with PKCE |
+| `/token` | POST | Token exchange, refresh |
+| `/userinfo` | GET/POST | User claims |
+| `/jwks` | GET | Public keys for verification |
+| `/logout` | GET | End session with redirect |
+| `/login` | GET/POST | Login UI (customizable) |
+| `/consent` | GET/POST | Consent UI |
+
+### Provider Configuration
+
+```typescript
+interface OIDCProviderConfig {
+  // Required: Your issuer URL (must be HTTPS in production)
+  issuer: string;
+
+  // Key configuration
+  keys: {
+    algorithm?: "RS256" | "ES256";  // default: RS256
+    privateKey?: string | Buffer;    // Or auto-generate
+    rotationIntervalMs?: number;
+  };
+
+  // Token lifetimes
+  tokens?: {
+    accessToken?: { ttlSeconds?: number };   // default: 3600
+    idToken?: { ttlSeconds?: number };       // default: 3600
+    refreshToken?: {
+      enabled?: boolean;
+      ttlSeconds?: number;    // default: 30 days
+      rotateOnUse?: boolean;  // default: true
+    };
+  };
+
+  // Registered clients
+  clients: OIDCClient[];
+
+  // Authentication backends
+  backends: {
+    emailPassword?: EmailPasswordBackendConfig;
+    federated?: FederatedProvider[];
+  };
+
+  // Store configuration (default: in-memory)
+  stores?: {
+    type: "memory" | "redis";
+    kv?: KVAdapter;  // For Redis stores
+  };
+
+  // UI customization
+  ui?: {
+    loginPath?: string;     // default: /login
+    consentPath?: string;   // default: /consent
+    templates?: {
+      login?: string;       // Custom HTML template
+      consent?: string;
+      error?: string;
+    };
+  };
+
+  // Lifecycle hooks
+  hooks?: {
+    onUserAuthenticated?: (user, method) => Promise<void>;
+    onTokenIssued?: (userId, clientId, scopes) => Promise<void>;
+    onConsentGranted?: (userId, clientId, scopes) => Promise<void>;
+    getAccessTokenClaims?: (user, client, scopes) => Promise<Record<string, unknown>>;
+  };
+}
+```
+
+### Federated Identity (Social Login)
+
+Add Google, Microsoft, or other OIDC providers:
+
+```typescript
+import { createOIDCProvider, oidcProviders } from "concave";
+
+const { router, middleware } = createOIDCProvider({
+  issuer: "https://auth.myapp.com",
+  keys: { algorithm: "RS256" },
+  clients: [/* ... */],
+  backends: {
+    // Email/password for direct login
+    emailPassword: {
+      enabled: true,
+      validateUser: async (email, password) => { /* ... */ },
+      findUserById: async (id) => { /* ... */ },
+    },
+    // Federated providers
+    federated: [
+      oidcProviders.google({
+        clientId: process.env.GOOGLE_CLIENT_ID!,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      }),
+      oidcProviders.microsoft({
+        clientId: process.env.MS_CLIENT_ID!,
+        clientSecret: process.env.MS_CLIENT_SECRET!,
+        tenantId: "common", // or specific tenant
+      }),
+      oidcProviders.generic({
+        name: "custom",
+        clientId: "...",
+        clientSecret: "...",
+        issuer: "https://custom-idp.example.com",
+        scopes: ["openid", "email", "profile"],
+      }),
+    ],
+  },
+});
+```
+
+Available provider helpers: `google`, `microsoft`, `okta`, `auth0`, `keycloak`, `generic`.
+
+## Client-Side OIDC Authentication
+
+The Concave client library handles OIDC flows automatically with PKCE, token refresh, and 401 retry.
+
+### Basic Setup
+
+```typescript
+import { createClient } from "concave/client";
+
+const client = createClient({
+  baseUrl: "https://api.myapp.com",
+  auth: {
+    issuer: "https://auth.myapp.com/oidc",
+    clientId: "web-app",
+    redirectUri: window.location.origin + "/callback",
+  },
+});
+
+// Login - redirects to OIDC provider
+await client.auth.login();
+
+// Handle callback (on /callback page)
+await client.auth.handleCallback();
+
+// Token is automatically included in all requests
+const todos = client.resource<Todo>("/todos");
+const items = await todos.list();
+
+// Check auth state
+if (client.auth.isAuthenticated()) {
+  const user = client.auth.getUser();
+  console.log("Logged in as:", user?.name);
+}
+
+// Logout
+await client.auth.logout();
+```
+
+### Subscribe to Auth State
+
+```typescript
+const unsubscribe = client.auth.subscribe((state) => {
+  console.log("Auth status:", state.status);
+  console.log("User:", state.user);
+  console.log("Is authenticated:", state.isAuthenticated);
+});
+
+// Cleanup
+unsubscribe();
+```
+
+### React Integration
+
+```typescript
+import { useState, useEffect } from "react";
+import { createClient, AuthState } from "concave/client";
+
+const client = createClient({
+  baseUrl: "https://api.myapp.com",
+  auth: {
+    issuer: "https://auth.myapp.com/oidc",
+    clientId: "web-app",
+    redirectUri: window.location.origin + "/callback",
+  },
+});
+
+function useAuth() {
+  const [state, setState] = useState<AuthState>(client.auth.getState());
+
+  useEffect(() => {
+    return client.auth.subscribe(setState);
+  }, []);
+
+  return {
+    ...state,
+    login: () => client.auth.login(),
+    logout: () => client.auth.logout(),
+  };
+}
+
+function App() {
+  const { user, isAuthenticated, status, login, logout } = useAuth();
+
+  if (status === "initializing") return <div>Loading...</div>;
+
+  if (!isAuthenticated) {
+    return <button onClick={login}>Sign In</button>;
+  }
+
+  return (
+    <div>
+      Welcome, {user?.name}!
+      <button onClick={logout}>Sign Out</button>
+    </div>
+  );
+}
+```
+
+### Callback Page
+
+```typescript
+// /callback page
+function CallbackPage() {
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    client.auth.handleCallback()
+      .then(() => {
+        window.location.href = "/";
+      })
+      .catch((err) => {
+        setError(err.message);
+      });
+  }, []);
+
+  if (error) return <div>Error: {error}</div>;
+  return <div>Completing sign in...</div>;
+}
+```
+
+### Token Storage Options
+
+```typescript
+import {
+  createClient,
+  MemoryStorage,
+  LocalStorageAdapter,
+  SessionStorageAdapter,
+} from "concave/client";
+
+// Memory storage (default - most secure, tokens lost on refresh)
+const client = createClient({
+  baseUrl: "...",
+  auth: {
+    // ...
+    storage: new MemoryStorage(),
+  },
+});
+
+// Local storage (persists across tabs/sessions)
+const client = createClient({
+  baseUrl: "...",
+  auth: {
+    // ...
+    storage: new LocalStorageAdapter("myapp_"),
+  },
+});
+
+// Session storage (persists until tab close)
+const client = createClient({
+  baseUrl: "...",
+  auth: {
+    // ...
+    storage: new SessionStorageAdapter("myapp_"),
+  },
+});
+```
+
+### Auth Configuration Options
+
+```typescript
+interface OIDCClientConfig {
+  // Required
+  issuer: string;           // OIDC provider URL
+  clientId: string;         // Client ID
+  redirectUri: string;      // Callback URL
+
+  // Optional
+  postLogoutRedirectUri?: string;  // Where to redirect after logout
+  scopes?: string[];               // default: ["openid", "profile", "email"]
+  autoRefresh?: boolean;           // default: true
+  refreshBufferSeconds?: number;   // default: 60 (refresh 60s before expiry)
+  storage?: TokenStorage;          // default: MemoryStorage
+  flowType?: "redirect" | "popup"; // default: "redirect"
+}
+```
+
+---
+
+## Session-Based Authentication (Legacy)
+
+For traditional session-based auth without OIDC, use the original `useAuth` function.
 
 ## Quick Setup
 

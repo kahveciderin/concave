@@ -345,6 +345,37 @@ export class OfflineManager {
   getIdMappings(): Map<string, string> {
     return new Map(this.idMappings);
   }
+
+  async hasPendingMutationsForId(objectId: string): Promise<boolean> {
+    const mutations = await this.storage.getMutations();
+    const resolvedId = this.resolveId(objectId);
+
+    return mutations.some(m => {
+      if (m.status !== "pending" && m.status !== "failed" && m.status !== "processing") {
+        return false;
+      }
+      // Check if mutation is for this object
+      if (m.objectId === objectId || m.objectId === resolvedId) {
+        return true;
+      }
+      // Check if this is a create mutation with matching optimistic ID
+      if (m.type === "create" && (m.optimisticId === objectId || m.optimisticId === resolvedId)) {
+        return true;
+      }
+      return false;
+    });
+  }
+
+  hasPendingMutationsForIdSync(objectId: string): boolean {
+    // Synchronous version using cached mutations (for performance in tight loops)
+    // This checks the in-memory idMappings for pending state
+    const resolvedId = this.resolveId(objectId);
+    // If the ID resolves to something different, there was a create that succeeded
+    // But we still need to check for pending updates/deletes
+    // Since we can't do async here, we return true to be safe if there's a mapping
+    // The caller should prefer the async version when possible
+    return this.idMappings.has(objectId) || objectId !== resolvedId;
+  }
 }
 
 export const createOfflineManager = (config: OfflineManagerConfig): OfflineManager => {

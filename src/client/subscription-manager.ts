@@ -99,15 +99,19 @@ export class SubscriptionManager<T extends { id: string }> implements Subscripti
     }
 
     switch (event.type) {
-      case "existing":
+      case "existing": {
+        const item = event.object;
+        const id = String(item[this.config.idField]);
+        this._state.items.set(id, item);
+        this.config.callbacks?.onExisting?.(item);
+        break;
+      }
+
       case "added": {
         const item = event.object;
         const id = String(item[this.config.idField]);
         this._state.items.set(id, item);
-
-        if (event.type === "added") {
-          this.config.callbacks?.onAdded?.(item, event.meta);
-        }
+        this.config.callbacks?.onAdded?.(item, event.meta);
         break;
       }
 

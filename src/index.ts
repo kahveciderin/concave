@@ -181,3 +181,79 @@ export type {
 
 // Subscription initialization (for multi-process deployments)
 export { initializeEventSubscription } from "./resource/subscription";
+
+// OIDC Provider
+export {
+  createOIDCProvider,
+  oidcProviders,
+  generateDiscoveryDocument,
+  createKeyManager,
+  createTokenService,
+  createEmailPasswordBackend,
+  createFederatedBackend,
+} from "./oidc";
+export type {
+  OIDCProviderConfig,
+  OIDCProviderResult,
+  OIDCClient,
+  OIDCUser,
+  OIDCDiscoveryDocument,
+  TokenResponse,
+  TokenService,
+  KeyManager,
+  AuthBackend,
+  AuthBackendResult,
+  AuthBackendsConfig,
+  EmailPasswordBackendConfig,
+  FederatedProvider,
+  IDTokenClaims,
+  AccessTokenClaims,
+  TokenConfig,
+  KeyConfig,
+  UIConfig,
+  SecurityConfig,
+  ProviderHooks,
+} from "./oidc";
+
+// Background Tasks
+export {
+  defineTask,
+  initializeTasks,
+  getTaskScheduler,
+  getTaskRegistry,
+  createTaskScheduler,
+  createTaskRegistry,
+  createTaskWorker,
+  startTaskWorkers,
+  createTaskTriggerHooks,
+  composeHooks as composeTaskHooks,
+} from "./tasks";
+export type {
+  TaskDefinition,
+  TaskContext,
+  Task,
+  TaskStatus,
+  TaskFilter,
+  ScheduleOptions,
+  RecurringConfig,
+  RetryConfig,
+  WorkerConfig,
+  WorkerStats,
+  TaskScheduler,
+  TaskRegistry,
+  TaskWorker,
+} from "./tasks";
+
+// Relations
+export {
+  RelationLoader,
+  parseInclude,
+  parseNestedFilter,
+} from "./resource/relations";
+export type {
+  RelationType,
+  RelationConfig,
+  RelationsConfig,
+  IncludeSpec,
+  IncludeConfig,
+} from "./resource/types";

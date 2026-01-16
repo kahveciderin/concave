@@ -84,6 +84,7 @@ export interface ProcedureResponse<T = unknown> {
 export interface ListOptions {
   filter?: string;
   select?: string[];
+  include?: string;
   cursor?: string;
   limit?: number;
   orderBy?: string;
@@ -92,6 +93,7 @@ export interface ListOptions {
 
 export interface GetOptions {
   select?: string[];
+  include?: string;
 }
 
 export interface AggregateOptions {
@@ -106,6 +108,7 @@ export interface AggregateOptions {
 
 export interface SubscribeOptions {
   filter?: string;
+  include?: string;
   resumeFrom?: number;
 }
 
@@ -144,6 +147,7 @@ export interface SubscriptionState<T> {
 
 export interface SubscriptionCallbacks<T> {
   onAdded?: (item: T, meta?: EventMeta) => void;
+  onExisting?: (item: T) => void;
   onChanged?: (item: T, previousId?: string) => void;
   onRemoved?: (id: string) => void;
   onInvalidate?: (reason?: string) => void;
@@ -280,9 +284,26 @@ export interface ReactiveAggregate {
   setOptions(options: AggregateOptions): void;
 }
 
+export interface AuthManager {
+  configure(config: unknown): void;
+  initialize(): Promise<unknown>;
+  login(options?: { prompt?: "none" | "login" | "consent" }): Promise<void>;
+  handleCallback(callbackUrl?: string): Promise<unknown>;
+  logout(options?: { localOnly?: boolean }): Promise<void>;
+  refreshTokens(): Promise<unknown>;
+  getState(): unknown;
+  getAccessToken(): string | null;
+  getUser(): unknown | null;
+  isAuthenticated(): boolean;
+  getTransport(): unknown | null;
+  subscribe(callback: (state: unknown) => void): () => void;
+  on(event: string, listener: (...args: unknown[]) => void): () => void;
+}
+
 export interface ConcaveClient {
   readonly transport: unknown;
   readonly offline?: unknown;
+  readonly auth: AuthManager;
   resource<T extends { id: string }>(path: string): ResourceClient<T>;
   setAuthToken(token: string): void;
   clearAuthToken(): void;

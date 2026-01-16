@@ -41,6 +41,7 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
 
     if (options.filter) params.filter = options.filter;
     if (options.select) params.select = options.select.join(",");
+    if (options.include) params.include = options.include;
     if (options.cursor) params.cursor = options.cursor;
     if (options.limit) params.limit = options.limit;
     if (options.orderBy) params.orderBy = options.orderBy;
@@ -59,6 +60,7 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     const params: Record<string, string | string[]> = {};
 
     if (options.select) params.select = options.select.join(",");
+    if (options.include) params.include = options.include;
 
     const response = await this.transport.request<T>({
       method: "GET",

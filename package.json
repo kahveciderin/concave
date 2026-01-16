@@ -69,8 +69,10 @@
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
+    "cron-parser": "^5.4.0",
     "dotenv": "^17.2.3",
     "drizzle-zod": "^0.8.3",
+    "jsonwebtoken": "^9.0.3",
     "uuid": "^13.0.0"
   },
   "peerDependencies": {
@@ -92,6 +94,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/cookie-parser": "^1.4.8",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.0.8",
     "@types/react": "^18.3.12",
     "@types/supertest": "^6.0.3",

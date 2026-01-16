@@ -4,6 +4,11 @@ import { createRepository, Repository } from "./repository";
 import { createOfflineManager, OfflineManager, InMemoryOfflineStorage, LocalStorageOfflineStorage } from "./offline";
 import { createSubscription, SubscriptionManager } from "./subscription-manager";
 import { getClient, setGlobalClient, getAuthErrorHandler, setAuthErrorHandler } from "./globals";
+import {
+  AuthManager,
+  createAuthManager,
+  OIDCClientConfig,
+} from "./auth";
 
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
 export type { ConcaveClient } from "./types";
@@ -17,6 +22,7 @@ export interface SimplifiedClientConfig {
   onError?: (error: Error) => void;
   onSyncComplete?: () => void;
   authCheckUrl?: string;
+  auth?: OIDCClientConfig;
 }
 
 export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
@@ -26,6 +32,19 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
     credentials: config.credentials,
     timeout: config.timeout,
   });
+
+  const auth = createAuthManager();
+
+  if (config.auth) {
+    auth.configure(config.auth);
+    auth.subscribe((state) => {
+      if (state.accessToken) {
+        transport.setHeader("Authorization", `Bearer ${state.accessToken}`);
+      } else {
+        transport.removeHeader("Authorization");
+      }
+    });
+  }
 
   let offline: OfflineManager | undefined;
 
@@ -89,6 +108,7 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
   const client: ConcaveClient = {
     transport,
     offline,
+    auth,
 
     resource<T extends { id: string }>(path: string): ResourceClient<T> {
       return createRepository<T>({
@@ -117,6 +137,11 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
     },
 
     async checkAuth(url?: string): Promise<{ user: unknown | null; expiresAt?: Date }> {
+      if (auth.isAuthenticated()) {
+        const user = auth.getUser();
+        return { user };
+      }
+
       const authUrl = url ?? config.authCheckUrl ?? "/api/auth/me";
       try {
         const response = await fetch(`${config.baseUrl}${authUrl}`, {
@@ -204,3 +229,53 @@ export type {
   LiveQueryOptions,
   LiveQueryMutations,
 } from "./live-store";
+
+export {
+  AuthManager,
+  createAuthManager,
+  OIDCClient,
+  createOIDCClient,
+  TokenManager,
+  MemoryStorage,
+  LocalStorageAdapter,
+  SessionStorageAdapter,
+  createTokenManager,
+  AuthTransport,
+  createAuthTransport,
+} from "./auth";
+export type {
+  OIDCClientConfig,
+  TokenSet,
+  OIDCUserInfo,
+  AuthState,
+  AuthStatus,
+  TokenStorage,
+  OIDCDiscoveryResponse,
+  TokenResponse as OIDCTokenResponse,
+  PKCEChallenge,
+  AuthCallbackParams,
+  AuthManagerEvents,
+} from "./auth";
+
+export {
+  q,
+  createQueryBuilder,
+  where,
+  createTypedQueryBuilder,
+  createFieldBuilder,
+  include,
+  withSelect,
+  withLimit,
+  withOptions,
+  createIncludeBuilder,
+  IncludeBuilder,
+  QueryBuilderChain,
+} from "./query-builder";
+export type {
+  QueryBuilder,
+  Primitive,
+  FieldBuilder,
+  TypedQueryBuilder,
+  IncludeOptions,
+  IncludeConfig,
+} from "./query-builder";

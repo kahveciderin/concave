@@ -264,6 +264,43 @@ export interface ResourceCapabilities {
   enableDelete?: boolean;
 }
 
+export type RelationType = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
+
+export interface RelationConfig {
+  resource: string;
+  schema: unknown;
+  type: RelationType;
+  foreignKey: AnyColumn;
+  references: AnyColumn;
+  through?: {
+    schema: unknown;
+    sourceKey: AnyColumn;
+    targetKey: AnyColumn;
+  };
+  strategy?: "eager" | "lazy";
+  defaultSelect?: string[];
+  filterable?: boolean;
+  subscribeToChanges?: boolean;
+}
+
+export interface RelationsConfig {
+  [relationName: string]: RelationConfig;
+}
+
+export interface IncludeSpec {
+  relation: string;
+  select?: string[];
+  filter?: string;
+  limit?: number;
+  nested?: IncludeSpec[];
+}
+
+export interface IncludeConfig {
+  maxDepth?: number;
+  defaultLimit?: number;
+  allowNestedFilters?: boolean;
+}
+
 export interface ResourceConfig<
   TConfig extends TableConfig,
   TTable extends Table<TConfig>,
@@ -287,4 +324,6 @@ export interface ResourceConfig<
   fields?: FieldPolicies;
   capabilities?: ResourceCapabilities;
   generatedFields?: string[];
+  relations?: RelationsConfig;
+  include?: IncludeConfig;
 }

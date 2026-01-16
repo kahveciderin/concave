@@ -5,6 +5,12 @@ import {
   where,
   createTypedQueryBuilder,
   createFieldBuilder,
+  include,
+  withSelect,
+  withLimit,
+  withOptions,
+  createIncludeBuilder,
+  IncludeBuilder,
 } from "@/client/query-builder";
 
 describe("Query Builder", () => {
@@ -308,6 +314,141 @@ describe("Query Builder", () => {
       expect(filter).toBe(
         '(tenantId=="tenant-123");((visibility=="public"),(ownerId=="user-456"))'
       );
+    });
+  });
+
+  describe("Include Builder", () => {
+    describe("include function", () => {
+      it("should build simple include string", () => {
+        expect(include("author")).toBe("author");
+      });
+
+      it("should build multiple includes", () => {
+        expect(include("author", "tags")).toBe("author,tags");
+      });
+
+      it("should build include with select", () => {
+        expect(include(withSelect("author", ["id", "name"]))).toBe(
+          "author(select:id,name)"
+        );
+      });
+
+      it("should build include with limit", () => {
+        expect(include(withLimit("tags", 5))).toBe("tags(limit:5)");
+      });
+
+      it("should build include with both options", () => {
+        expect(
+          include(withOptions("tags", { select: ["id", "name"], limit: 5 }))
+        ).toBe("tags(select:id,name;limit:5)");
+      });
+
+      it("should mix simple and configured includes", () => {
+        expect(
+          include("author", withSelect("tags", ["id", "name"]), "category")
+        ).toBe("author,tags(select:id,name),category");
+      });
+    });
+
+    describe("withSelect helper", () => {
+      it("should create config with select option", () => {
+        const config = withSelect("author", ["id", "name", "email"]);
+        expect(config).toEqual({
+          name: "author",
+          options: { select: ["id", "name", "email"] },
+        });
+      });
+    });
+
+    describe("withLimit helper", () => {
+      it("should create config with limit option", () => {
+        const config = withLimit("comments", 10);
+        expect(config).toEqual({
+          name: "comments",
+          options: { limit: 10 },
+        });
+      });
+    });
+
+    describe("withOptions helper", () => {
+      it("should create config with all options", () => {
+        const config = withOptions("posts", { select: ["title"], limit: 3 });
+        expect(config).toEqual({
+          name: "posts",
+          options: { select: ["title"], limit: 3 },
+        });
+      });
+    });
+
+    describe("IncludeBuilder fluent API", () => {
+      it("should build include with add method", () => {
+        const result = createIncludeBuilder()
+          .add("author")
+          .add("tags")
+          .build();
+        expect(result).toBe("author,tags");
+      });
+
+      it("should build include with select method", () => {
+        const result = createIncludeBuilder()
+          .select("author", ["id", "name"])
+          .build();
+        expect(result).toBe("author(select:id,name)");
+      });
+
+      it("should build include with limit method", () => {
+        const result = createIncludeBuilder().limit("tags", 5).build();
+        expect(result).toBe("tags(limit:5)");
+      });
+
+      it("should chain multiple methods", () => {
+        const result = createIncludeBuilder()
+          .add("category")
+          .select("author", ["id", "name", "avatar"])
+          .limit("comments", 10)
+          .build();
+        expect(result).toBe(
+          "category,author(select:id,name,avatar),comments(limit:10)"
+        );
+      });
+
+      it("should work with add method and options", () => {
+        const result = createIncludeBuilder()
+          .add("author", { select: ["id", "name"], limit: 1 })
+          .add("tags")
+          .build();
+        expect(result).toBe("author(select:id,name;limit:1),tags");
+      });
+
+      it("should convert to string", () => {
+        const builder = createIncludeBuilder().add("author").add("tags");
+        expect(String(builder)).toBe("author,tags");
+        expect(builder.toString()).toBe("author,tags");
+      });
+    });
+
+    describe("Real-world include scenarios", () => {
+      it("should build blog post includes", () => {
+        const includeStr = include(
+          withSelect("author", ["id", "name", "avatar"]),
+          withOptions("comments", { select: ["id", "content", "createdAt"], limit: 5 }),
+          "tags"
+        );
+        expect(includeStr).toBe(
+          "author(select:id,name,avatar),comments(select:id,content,createdAt;limit:5),tags"
+        );
+      });
+
+      it("should build e-commerce order includes", () => {
+        const includeStr = createIncludeBuilder()
+          .add("customer")
+          .select("items", ["id", "quantity", "price"])
+          .add("shippingAddress")
+          .build();
+        expect(includeStr).toBe(
+          "customer,items(select:id,quantity,price),shippingAddress"
+        );
+      });
     });
   });
 });

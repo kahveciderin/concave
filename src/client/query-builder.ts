@@ -314,4 +314,90 @@ export const createTypedQueryBuilder = <T extends Record<string, unknown>>(
   });
 };
 
+export interface IncludeOptions {
+  select?: string[];
+  limit?: number;
+}
+
+export interface IncludeConfig {
+  name: string;
+  options?: IncludeOptions;
+}
+
+const buildIncludeString = (configs: IncludeConfig[]): string => {
+  return configs
+    .map(({ name, options }) => {
+      if (!options || (options.select === undefined && options.limit === undefined)) {
+        return name;
+      }
+
+      const parts: string[] = [];
+      if (options.select && options.select.length > 0) {
+        parts.push(`select:${options.select.join(",")}`);
+      }
+      if (options.limit !== undefined) {
+        parts.push(`limit:${options.limit}`);
+      }
+
+      return `${name}(${parts.join(";")})`;
+    })
+    .join(",");
+};
+
+export const include = (...relations: (string | IncludeConfig)[]): string => {
+  const configs: IncludeConfig[] = relations.map((r) =>
+    typeof r === "string" ? { name: r } : r
+  );
+  return buildIncludeString(configs);
+};
+
+export const withSelect = (name: string, select: string[]): IncludeConfig => ({
+  name,
+  options: { select },
+});
+
+export const withLimit = (name: string, limit: number): IncludeConfig => ({
+  name,
+  options: { limit },
+});
+
+export const withOptions = (
+  name: string,
+  options: IncludeOptions
+): IncludeConfig => ({
+  name,
+  options,
+});
+
+export class IncludeBuilder {
+  private configs: IncludeConfig[] = [];
+
+  add(name: string, options?: IncludeOptions): this {
+    this.configs.push({ name, options });
+    return this;
+  }
+
+  select(name: string, fields: string[]): this {
+    this.configs.push({ name, options: { select: fields } });
+    return this;
+  }
+
+  limit(name: string, max: number): this {
+    this.configs.push({ name, options: { limit: max } });
+    return this;
+  }
+
+  build(): string {
+    return buildIncludeString(this.configs);
+  }
+
+  toString(): string {
+    return this.build();
+  }
+}
+
+export const createIncludeBuilder = (): IncludeBuilder => {
+  return new IncludeBuilder();
+};
+
 export default q;

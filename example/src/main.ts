@@ -25,7 +25,7 @@ import {
 import type { RegisteredResource } from "concave";
 
 import config from "./config/config";
-import { usersTable, todosTable } from "./db/schema";
+import { usersTable, todosTable, categoriesTable, tagsTable, todoTagsTable } from "./db/schema";
 import { db } from "./db/db";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -91,6 +91,58 @@ app.use("/api/auth", authRouter);
 app.use(authMiddleware);
 
 app.use(
+  "/api/categories",
+  useResource(categoriesTable, {
+    id: categoriesTable.id,
+    db,
+    auth: {
+      read: async (user) => rsql`userId==${user?.id}`,
+      create: async (user) => user ? rsql`*` : rsql``,
+      update: async (user) => rsql`userId==${user?.id}`,
+      delete: async (user) => rsql`userId==${user?.id}`,
+    },
+    generatedFields: ["id", "userId", "createdAt"],
+    hooks: {
+      onBeforeCreate: async (ctx, data) => {
+        if (!ctx.user) throw new UnauthorizedError("Must be logged in");
+        return {
+          ...data,
+          id: randomUUID(),
+          userId: ctx.user.id,
+          createdAt: new Date(),
+        };
+      },
+    },
+  })
+);
+
+app.use(
+  "/api/tags",
+  useResource(tagsTable, {
+    id: tagsTable.id,
+    db,
+    auth: {
+      read: async (user) => rsql`userId==${user?.id}`,
+      create: async (user) => user ? rsql`*` : rsql``,
+      update: async (user) => rsql`userId==${user?.id}`,
+      delete: async (user) => rsql`userId==${user?.id}`,
+    },
+    generatedFields: ["id", "userId", "createdAt"],
+    hooks: {
+      onBeforeCreate: async (ctx, data) => {
+        if (!ctx.user) throw new UnauthorizedError("Must be logged in");
+        return {
+          ...data,
+          id: randomUUID(),
+          userId: ctx.user.id,
+          createdAt: new Date(),
+        };
+      },
+    },
+  })
+);
+
+app.use(
   "/api/todos",
   useResource(todosTable, {
     id: todosTable.id,
@@ -104,6 +156,27 @@ app.use(
       subscribe: async (user) => rsql`userId==${user?.id}`,
     },
     generatedFields: ["id", "userId", "position", "createdAt", "updatedAt"],
+    relations: {
+      category: {
+        resource: "categories",
+        schema: categoriesTable,
+        type: "belongsTo",
+        foreignKey: todosTable.categoryId,
+        references: categoriesTable.id,
+      },
+      tags: {
+        resource: "tags",
+        schema: tagsTable,
+        type: "manyToMany",
+        foreignKey: todosTable.id,
+        references: tagsTable.id,
+        through: {
+          schema: todoTagsTable,
+          sourceKey: todoTagsTable.todoId,
+          targetKey: todoTagsTable.tagId,
+        },
+      },
+    },
     hooks: {
       onBeforeCreate: async (ctx, data) => {
         if (!ctx.user) throw new UnauthorizedError("Must be logged in");
@@ -200,17 +273,43 @@ app.use("/__concave", createAdminUI({
 }));
 
 registerResource({
+  path: "/api/categories",
+  fields: ["id", "userId", "name", "color", "createdAt"],
+  capabilities: { enableCreate: true, enableUpdate: true, enableDelete: true },
+});
+
+registerResource({
+  path: "/api/tags",
+  fields: ["id", "userId", "name", "createdAt"],
+  capabilities: { enableCreate: true, enableUpdate: true, enableDelete: true },
+});
+
+registerResource({
   path: "/api/todos",
-  fields: ["id", "userId", "title", "completed", "position", "createdAt", "updatedAt"],
+  fields: ["id", "userId", "categoryId", "title", "completed", "position", "createdAt", "updatedAt"],
   capabilities: { enableCreate: true, enableUpdate: true, enableDelete: true, enableSubscriptions: true },
 });
 
-const registeredResources: RegisteredResource[] = [{
-  name: "Todo",
-  path: "/api/todos",
-  schema: todosTable,
-  capabilities: { enableCreate: true, enableUpdate: true, enableDelete: true, enableSubscribe: true },
-}];
+const registeredResources: RegisteredResource[] = [
+  {
+    name: "Category",
+    path: "/api/categories",
+    schema: categoriesTable,
+    capabilities: { enableCreate: true, enableUpdate: true, enableDelete: true },
+  },
+  {
+    name: "Tag",
+    path: "/api/tags",
+    schema: tagsTable,
+    capabilities: { enableCreate: true, enableUpdate: true, enableDelete: true },
+  },
+  {
+    name: "Todo",
+    path: "/api/todos",
+    schema: todosTable,
+    capabilities: { enableCreate: true, enableUpdate: true, enableDelete: true, enableSubscribe: true },
+  },
+];
 app.use("/__concave", createConcaveRouter(registeredResources));
 
 const publicDir = path.join(__dirname, "../public");
