@@ -105,25 +105,115 @@ export interface OfflineManagerConfig {
   onIdRemapped?: (optimisticId: string, serverId: string) => void;
 }
 
-const isDuplicateMutation = (
+interface MergeResult {
+  type: "skip" | "merge" | "none";
+  targetId?: string;
+  targetMutation?: OfflineMutation;
+}
+
+const findMergeableMutation = (
   mutation: OfflineMutation,
   pending: OfflineMutation[],
   dedupeWindowMs: number = 5000
-): boolean => {
-  return pending.some(
-    (p) =>
-      p.id !== mutation.id &&
-      (p.idempotencyKey === mutation.idempotencyKey ||
-        (p.type === mutation.type &&
-          p.resource === mutation.resource &&
-          p.objectId === mutation.objectId &&
-          p.timestamp > Date.now() - dedupeWindowMs))
-  );
+): MergeResult => {
+  for (const p of pending) {
+    // Skip self
+    if (p.id === mutation.id) continue;
+
+    // Skip mutations that aren't pending
+    if (p.status !== "pending" && p.status !== "failed") continue;
+
+    // Exact idempotency key match is always a duplicate - skip
+    if (p.idempotencyKey === mutation.idempotencyKey) {
+      return { type: "skip", targetId: p.id };
+    }
+
+    const withinWindow = p.timestamp > Date.now() - dedupeWindowMs;
+
+    // For creates, only skip if optimisticId matches (true duplicate)
+    if (mutation.type === "create") {
+      if (
+        p.type === "create" &&
+        p.resource === mutation.resource &&
+        p.optimisticId === mutation.optimisticId &&
+        mutation.optimisticId !== undefined &&
+        withinWindow
+      ) {
+        return { type: "skip", targetId: p.id };
+      }
+      continue;
+    }
+
+    // For updates to the same objectId, MERGE the data
+    if (mutation.type === "update") {
+      if (
+        p.type === "update" &&
+        p.resource === mutation.resource &&
+        p.objectId === mutation.objectId &&
+        mutation.objectId !== undefined &&
+        withinWindow
+      ) {
+        return { type: "merge", targetId: p.id, targetMutation: p };
+      }
+      continue;
+    }
+
+    // For deletes, skip if there's already a pending delete for same object
+    if (mutation.type === "delete") {
+      if (
+        p.type === "delete" &&
+        p.resource === mutation.resource &&
+        p.objectId === mutation.objectId &&
+        mutation.objectId !== undefined &&
+        withinWindow
+      ) {
+        return { type: "skip", targetId: p.id };
+      }
+      continue;
+    }
+  }
+
+  return { type: "none" };
 };
 
 const isConflictError = (error: unknown): error is ConflictError => {
   if (typeof error !== "object" || error === null) return false;
   return (error as ConflictError).code === "CONFLICT";
+};
+
+/**
+ * Recursively remap all optimistic IDs in a data structure to their server IDs.
+ * This handles nested objects, arrays, and any depth of nesting.
+ */
+const remapIdsInData = (
+  data: unknown,
+  idMappings: Map<string, string>
+): unknown => {
+  if (data === null || data === undefined) {
+    return data;
+  }
+
+  // Handle strings - check if it's an optimistic ID that needs remapping
+  if (typeof data === "string") {
+    return idMappings.get(data) ?? data;
+  }
+
+  // Handle arrays - recursively remap each element
+  if (Array.isArray(data)) {
+    return data.map((item) => remapIdsInData(item, idMappings));
+  }
+
+  // Handle objects - recursively remap each value
+  if (typeof data === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      result[key] = remapIdsInData(value, idMappings);
+    }
+    return result;
+  }
+
+  // Return primitives (numbers, booleans) as-is
+  return data;
 };
 
 export class OfflineManager {
@@ -184,9 +274,24 @@ export class OfflineManager {
     const pending = await this.storage.getMutations();
     const dedupeWindowMs = this.config.dedupeWindowMs ?? 5000;
 
-    if (isDuplicateMutation(mutation, pending, dedupeWindowMs)) {
+    const mergeResult = findMergeableMutation(mutation, pending, dedupeWindowMs);
+
+    if (mergeResult.type === "skip") {
       console.warn("Duplicate mutation detected, skipping:", mutation.id);
       return mutation.id;
+    }
+
+    if (mergeResult.type === "merge" && mergeResult.targetMutation) {
+      // Merge update data: combine existing data with new data
+      const mergedData = {
+        ...((mergeResult.targetMutation.data as object) || {}),
+        ...((mutation.data as object) || {}),
+      };
+      await this.storage.updateMutation(mergeResult.targetMutation.id, {
+        data: mergedData,
+        timestamp: Date.now(),
+      });
+      return mergeResult.targetMutation.id;
     }
 
     await this.storage.addMutation(mutation);
@@ -241,7 +346,16 @@ export class OfflineManager {
         await this.storage.updateMutation(mutation.id, { status: "processing" });
 
         try {
-          const result = await this.onMutationSync(mutation);
+          // Remap optimistic IDs to server IDs before syncing
+          const remappedMutation: OfflineMutation = {
+            ...mutation,
+            // Remap objectId if it's an optimistic ID
+            objectId: mutation.objectId ? this.resolveId(mutation.objectId) : mutation.objectId,
+            // Recursively remap any optimistic IDs in the data
+            data: remapIdsInData(mutation.data, this.idMappings),
+          };
+
+          const result = await this.onMutationSync(remappedMutation);
 
           if (result.success) {
             if (

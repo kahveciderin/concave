@@ -11,7 +11,7 @@ export interface LiveQueryState<T> {
 }
 
 export interface LiveQueryMutations<T extends { id: string }> {
-  create: (data: Omit<T, "id">) => void;
+  create: (data: Omit<T, "id">) => string;
   update: (id: string, data: Partial<T>) => void;
   delete: (id: string) => void;
 }
@@ -70,6 +70,8 @@ export const createLiveQuery = <T extends { id: string }>(
 ): LiveQuery<T> => {
   const cache = new Map<string, T>();
   const optimisticIds = new Set<string>();
+  const pendingDeletes = new Set<string>();
+  const pendingUpdates = new Map<string, Partial<T>>();
   const idMappings = new Map<string, string>();
   const listeners = new Set<() => void>();
   let subscription: Subscription<T> | null = null;
@@ -123,26 +125,54 @@ export const createLiveQuery = <T extends { id: string }>(
   const handleAdd = (item: T, meta?: EventMeta) => {
     const optimisticId = meta?.optimisticId;
 
+    // If this item (or its optimistic version) has a pending delete, don't add it
+    if (pendingDeletes.has(item.id)) {
+      return;
+    }
+    if (optimisticId && pendingDeletes.has(optimisticId)) {
+      // Clean up the pending delete since server confirmed addition
+      pendingDeletes.delete(optimisticId);
+    }
+
     if (optimisticId && optimisticIds.has(optimisticId)) {
       cache.delete(optimisticId);
       optimisticIds.delete(optimisticId);
-      idMappings.set(item.id, optimisticId);
+      idMappings.set(optimisticId, item.id);
       callbacks?.onIdRemapped?.(optimisticId, item.id);
+
+      // Transfer any pending updates from optimistic ID to server ID
+      const pendingUpdate = pendingUpdates.get(optimisticId);
+      if (pendingUpdate) {
+        pendingUpdates.delete(optimisticId);
+        pendingUpdates.set(item.id, pendingUpdate);
+      }
     }
 
     const mappedOptimisticId = Array.from(idMappings.entries()).find(
-      ([serverId]) => serverId === item.id
-    )?.[1];
+      ([optId, serverId]) => serverId === item.id
+    )?.[0];
 
     if (mappedOptimisticId && cache.has(mappedOptimisticId)) {
       cache.delete(mappedOptimisticId);
     }
 
-    cache.set(item.id, item);
+    // Apply any pending updates to the item
+    let finalItem = item;
+    const pendingUpdate = pendingUpdates.get(item.id);
+    if (pendingUpdate) {
+      finalItem = { ...item, ...pendingUpdate };
+    }
+
+    cache.set(item.id, finalItem);
     notify();
   };
 
   const handleExisting = async (item: T) => {
+    // Check if this item has a pending delete - if so, don't add it back
+    if (pendingDeletes.has(item.id)) {
+      return;
+    }
+
     // Check if this item's ID is a server ID that maps to an optimistic ID
     // This handles the case where the subscription reconnects after offline sync
     // and the added event with optimisticId metadata was missed
@@ -150,13 +180,12 @@ export const createLiveQuery = <T extends { id: string }>(
     // Find the optimistic ID that maps to this server ID
     let mappedOptimisticId: string | undefined;
 
-    // First check our local idMappings
-    const localMappedOptimisticId = Array.from(idMappings.entries()).find(
-      ([serverId]) => serverId === item.id
-    )?.[1];
-
-    if (localMappedOptimisticId) {
-      mappedOptimisticId = localMappedOptimisticId;
+    // First check our local idMappings (optimisticId -> serverId)
+    for (const [optId, serverId] of idMappings.entries()) {
+      if (serverId === item.id) {
+        mappedOptimisticId = optId;
+        break;
+      }
     }
 
     // Also check external ID mappings (from OfflineManager)
@@ -171,6 +200,11 @@ export const createLiveQuery = <T extends { id: string }>(
       }
     }
 
+    // Check if the mapped optimistic ID has a pending delete
+    if (mappedOptimisticId && pendingDeletes.has(mappedOptimisticId)) {
+      return;
+    }
+
     // If we found a mapping and have the optimistic item in cache
     if (mappedOptimisticId && cache.has(mappedOptimisticId)) {
       // Check if there are pending mutations for this item
@@ -180,7 +214,7 @@ export const createLiveQuery = <T extends { id: string }>(
         if (hasPending) {
           // Don't replace optimistic item - it has pending changes
           // Update our local idMappings for when the mutations complete
-          idMappings.set(item.id, mappedOptimisticId);
+          idMappings.set(mappedOptimisticId, item.id);
           return;
         }
       }
@@ -188,10 +222,24 @@ export const createLiveQuery = <T extends { id: string }>(
       // No pending mutations - safe to replace
       cache.delete(mappedOptimisticId);
       optimisticIds.delete(mappedOptimisticId);
-      idMappings.set(item.id, mappedOptimisticId);
+      idMappings.set(mappedOptimisticId, item.id);
     }
 
-    cache.set(item.id, item);
+    // Apply any pending updates to the item
+    let finalItem = item;
+    const pendingUpdate = pendingUpdates.get(item.id);
+    if (pendingUpdate) {
+      finalItem = { ...item, ...pendingUpdate };
+    }
+    // Also check for pending updates on the mapped optimistic ID
+    if (mappedOptimisticId) {
+      const optPendingUpdate = pendingUpdates.get(mappedOptimisticId);
+      if (optPendingUpdate) {
+        finalItem = { ...finalItem, ...optPendingUpdate };
+      }
+    }
+
+    cache.set(item.id, finalItem);
     notify();
   };
 
@@ -226,6 +274,8 @@ export const createLiveQuery = <T extends { id: string }>(
   const handleRemove = (id: string) => {
     cache.delete(id);
     optimisticIds.delete(id);
+    // Server confirmed removal, clear pending delete
+    pendingDeletes.delete(id);
     notify();
   };
 
@@ -278,9 +328,68 @@ export const createLiveQuery = <T extends { id: string }>(
 
       const result = await repo.list(listOptions);
 
+      // Save optimistic items before clearing cache
+      const optimisticItems = new Map<string, T>();
+      for (const optId of optimisticIds) {
+        const item = cache.get(optId);
+        if (item) {
+          optimisticItems.set(optId, item);
+        }
+      }
+
       cache.clear();
+
+      // Add server items, but skip items with pending deletes
+      // and apply pending updates
       for (const item of result.items) {
-        cache.set(item.id, item);
+        // Skip items with pending deletes
+        if (pendingDeletes.has(item.id)) {
+          continue;
+        }
+
+        // Check if any optimistic ID maps to this server ID
+        let mappedOptId: string | undefined;
+        for (const [optId, serverId] of idMappings.entries()) {
+          if (serverId === item.id) {
+            mappedOptId = optId;
+            break;
+          }
+        }
+
+        // Skip if the mapped optimistic ID has a pending delete
+        if (mappedOptId && pendingDeletes.has(mappedOptId)) {
+          continue;
+        }
+
+        // Apply any pending updates
+        let finalItem = item;
+        const pendingUpdate = pendingUpdates.get(item.id);
+        if (pendingUpdate) {
+          finalItem = { ...item, ...pendingUpdate };
+        }
+        if (mappedOptId) {
+          const optPendingUpdate = pendingUpdates.get(mappedOptId);
+          if (optPendingUpdate) {
+            finalItem = { ...finalItem, ...optPendingUpdate };
+          }
+        }
+
+        cache.set(item.id, finalItem);
+      }
+
+      // Restore optimistic items that don't have server equivalents yet
+      for (const [optId, item] of optimisticItems) {
+        // Check if this optimistic ID has been mapped to a server ID
+        const serverId = idMappings.get(optId);
+        if (serverId && cache.has(serverId)) {
+          // Server item exists, don't add optimistic version
+          continue;
+        }
+        // Skip if pending delete
+        if (pendingDeletes.has(optId)) {
+          continue;
+        }
+        cache.set(optId, item);
       }
 
       status = "live";
@@ -341,6 +450,8 @@ export const createLiveQuery = <T extends { id: string }>(
       repo.create(data, { optimisticId }).then(() => {
         updatePendingCount();
       });
+
+      return optimisticId;
     },
 
     update: (id, data) => {
@@ -350,6 +461,11 @@ export const createLiveQuery = <T extends { id: string }>(
         notify();
       }
 
+      // Track pending update so it can be reapplied after reconnection
+      // It will be cleared when we receive the "changed" event from server
+      const existingPending = pendingUpdates.get(id) || {};
+      pendingUpdates.set(id, { ...existingPending, ...data } as Partial<T>);
+
       repo.update(id, data).then(() => {
         updatePendingCount();
       });
@@ -358,6 +474,9 @@ export const createLiveQuery = <T extends { id: string }>(
     delete: (id) => {
       cache.delete(id);
       optimisticIds.delete(id);
+      // Track pending delete so item doesn't reappear on reconnection
+      // It will be cleared when we receive the "removed" event from server
+      pendingDeletes.add(id);
       notify();
 
       repo.delete(id).then(() => {

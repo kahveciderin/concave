@@ -111,7 +111,10 @@ export function useLiveList<T extends { id: string }>(
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   const mutate: LiveQueryMutations<T> = useMemo(() => ({
-    create: (data) => liveQueryRef.current?.mutate.create(data),
+    create: (data) => {
+      if (!liveQueryRef.current) throw new Error("LiveQuery not initialized");
+      return liveQueryRef.current.mutate.create(data);
+    },
     update: (id, data) => liveQueryRef.current?.mutate.update(id, data),
     delete: (id) => liveQueryRef.current?.mutate.delete(id),
   }), []);
