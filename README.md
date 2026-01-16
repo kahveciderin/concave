@@ -42,7 +42,7 @@ A production-ready real-time API framework for Express.js and Drizzle ORM. Defin
 ### Installation
 
 ```bash
-npm install concave drizzle-orm @libsql/client
+npm install @kahveciderin/concave drizzle-orm @libsql/client
 ```
 
 ### Define Your Schema
