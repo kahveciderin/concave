@@ -1,6 +1,6 @@
 {
   "name": "@kahveciderin/concave",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Real-time resource API framework for Express.js with TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
