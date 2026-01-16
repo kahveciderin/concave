@@ -131,9 +131,17 @@ useResource(usersTable, {
 
 ### Security
 - [Authentication](./authentication.md) - Auth setup and scopes
+- [Secure Queries](./secure-queries.md) - Scope-enforced query builder
 
 ### Advanced
 - [Procedures & Hooks](./procedures.md) - RPC and lifecycle hooks
 - [Client Library](./client-library.md) - TypeScript client
 - [Offline Support](./offline-support.md) - Offline-first apps
 - [Error Handling](./error-handling.md) - Error types and handling
+
+### API Documentation
+- [OpenAPI](./openapi.md) - OpenAPI spec generation
+- [Middleware](./middleware.md) - Observability, versioning, rate limiting
+
+### Development Tools
+- [Admin UI](./admin-ui.md) - Built-in admin dashboard at /__concave/ui

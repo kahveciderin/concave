@@ -171,11 +171,25 @@ describe("SubscriptionManager", () => {
 
       expect(subscription.items).toHaveLength(1);
       expect(subscription.items[0].name).toBe("New Item");
-      expect(callbacks.onAdded).toHaveBeenCalledWith({
-        id: "1",
-        name: "New Item",
-        status: "active",
+      expect(callbacks.onAdded).toHaveBeenCalledWith(
+        { id: "1", name: "New Item", status: "active" },
+        undefined
+      );
+    });
+
+    it("should handle added event with meta.optimisticId", () => {
+      triggerEvent("message", {
+        type: "added",
+        seq: 1,
+        object: { id: "server-1", name: "New Item", status: "active" },
+        meta: { optimisticId: "optimistic-123" },
       });
+
+      expect(subscription.items).toHaveLength(1);
+      expect(callbacks.onAdded).toHaveBeenCalledWith(
+        { id: "server-1", name: "New Item", status: "active" },
+        { optimisticId: "optimistic-123" }
+      );
     });
 
     it("should handle changed event", () => {

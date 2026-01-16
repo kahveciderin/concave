@@ -6,32 +6,68 @@ Concave's client library supports offline-first applications with optimistic upd
 
 When your application goes offline:
 1. Read operations fail (or use cached data)
-2. Write operations with `optimistic: true` are queued locally
+2. Mutations are queued locally with optimistic updates
 3. Queued mutations sync automatically when online
+4. The `useLiveList` hook handles all of this automatically
+
+## Quick Start
+
+The simplest way to enable offline support is with `offline: true`:
+
+```typescript
+import { getOrCreateClient } from "concave/client";
+import { useLiveList } from "concave/client/react";
+
+const client = getOrCreateClient({
+  baseUrl: location.origin,
+  credentials: "include",
+  offline: true,  // Uses LocalStorage with sensible defaults
+});
+
+function TodoApp() {
+  const { items, status, statusLabel, mutate, pendingCount } = useLiveList<Todo>(
+    "/api/todos",
+    { orderBy: "position" }
+  );
+
+  // Mutations work offline automatically
+  const addTodo = () => {
+    mutate.create({ title: "New todo" });  // Instant optimistic update
+  };
+
+  return (
+    <div>
+      <ul>
+        {items.map(todo => (
+          <li key={todo.id}>{todo.title}</li>
+        ))}
+      </ul>
+      <button onClick={addTodo}>Add</button>
+      <footer>{statusLabel}</footer>  {/* "Live", "Offline (2 pending)", etc. */}
+    </div>
+  );
+}
+```
 
 ## Setup
 
-### Basic Configuration
+### Simple Configuration
 
 ```typescript
 import { createClient } from "concave/client";
 
+// Just pass offline: true for sensible defaults
 const client = createClient({
   baseUrl: "http://localhost:3000/api",
-  offline: {
-    enabled: true,
-    maxRetries: 3,        // Max sync retry attempts
-    retryDelay: 1000,     // Initial retry delay (ms)
-  },
-  onError: (error) => {
-    console.error("Sync error:", error);
-  },
+  offline: true,  // Uses LocalStorage("concave-mutations")
+  onError: (error) => console.error("Sync error:", error),
+  onSyncComplete: () => console.log("All changes synced"),
 });
 ```
 
-### Custom Storage
+### Advanced Configuration
 
-By default, offline mutations are stored in memory. For persistence across page reloads, use LocalStorage:
+For fine-grained control, pass an object:
 
 ```typescript
 import { createClient, LocalStorageOfflineStorage } from "concave/client";
@@ -41,9 +77,20 @@ const client = createClient({
   offline: {
     enabled: true,
     storage: new LocalStorageOfflineStorage("my-app-offline"),
+    maxRetries: 5,
+    retryDelay: 2000,
+    onIdRemapped: (optimisticId, serverId) => {
+      // Called when temporary IDs are replaced with server IDs
+      console.log(`ID changed: ${optimisticId} -> ${serverId}`);
+    },
+  },
+  onError: (error) => {
+    console.error("Sync error:", error);
   },
 });
 ```
+
+### Custom Storage
 
 Or implement your own storage (e.g., IndexedDB):
 
@@ -180,6 +227,115 @@ const isOnline = client.offline?.getIsOnline();
 
 ## Example: Offline-First Todo App
 
+### With React Hooks (Recommended)
+
+The `useLiveList` hook handles all offline logic automatically:
+
+```typescript
+import { getOrCreateClient } from "concave/client";
+import { useLiveList } from "concave/client/react";
+
+const client = getOrCreateClient({
+  baseUrl: location.origin,
+  offline: true,
+});
+
+function TodoApp() {
+  const { items: todos, status, statusLabel, mutate, pendingCount } = useLiveList<Todo>(
+    "/api/todos",
+    { orderBy: "createdAt:desc" }
+  );
+
+  // All mutations automatically:
+  // - Update UI instantly (optimistic)
+  // - Queue when offline
+  // - Sync when back online
+  // - Handle ID remapping
+
+  const addTodo = (text: string) => {
+    mutate.create({ text, completed: false });
+  };
+
+  const toggleTodo = (id: string, completed: boolean) => {
+    mutate.update(id, { completed: !completed });
+  };
+
+  const deleteTodo = (id: string) => {
+    mutate.delete(id);
+  };
+
+  return (
+    <div>
+      <ul>
+        {todos.map(todo => (
+          <li key={todo.id}>
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => toggleTodo(todo.id, todo.completed)}
+            />
+            {todo.text}
+            <button onClick={() => deleteTodo(todo.id)}>×</button>
+          </li>
+        ))}
+      </ul>
+      <footer>
+        {statusLabel}
+        {pendingCount > 0 && ` • ${pendingCount} pending`}
+      </footer>
+    </div>
+  );
+}
+```
+
+### Without React (Low-Level API)
+
+For non-React apps or custom integrations:
+
+```typescript
+import { createClient, createLiveQuery, LocalStorageOfflineStorage } from "concave/client";
+
+const client = createClient({
+  baseUrl: "/api",
+  offline: {
+    enabled: true,
+    storage: new LocalStorageOfflineStorage("todos"),
+  },
+});
+
+const todos = client.resource<Todo>("/todos");
+
+// Create a live query store
+const liveQuery = createLiveQuery(todos, { orderBy: "createdAt:desc" });
+
+// Subscribe to changes
+liveQuery.subscribe(() => {
+  const state = liveQuery.getSnapshot();
+  renderTodos(state.items);
+  renderStatus(state.status, state.pendingCount);
+});
+
+// Mutations work the same way
+function addTodo(text: string) {
+  liveQuery.mutate.create({ text, completed: false });
+}
+
+function toggleTodo(id: string, completed: boolean) {
+  liveQuery.mutate.update(id, { completed: !completed });
+}
+
+function deleteTodo(id: string) {
+  liveQuery.mutate.delete(id);
+}
+
+// Cleanup when done
+liveQuery.destroy();
+```
+
+### Manual Approach (Full Control)
+
+For complete control over offline behavior:
+
 ```typescript
 const client = createClient({
   baseUrl: "/api",
@@ -191,57 +347,33 @@ const client = createClient({
 
 const todos = client.resource<Todo>("/todos");
 
-// UI state
-let localTodos: Todo[] = [];
-
 // Load initial data
 async function loadTodos() {
   try {
     const result = await todos.list();
-    localTodos = result.items;
+    return result.items;
   } catch (error) {
-    // Use cached data if offline
-    console.log("Using cached data");
+    console.log("Offline - using cached data");
+    return [];
   }
-  renderTodos();
 }
 
-// Add todo (works offline)
+// Create with optimistic ID
 async function addTodo(text: string) {
-  const todo = await todos.create(
+  return await todos.create(
     { text, completed: false },
-    { optimistic: true }
+    { optimisticId: `temp_${Date.now()}` }
   );
-
-  // Add to local state immediately
-  localTodos.push(todo);
-  renderTodos();
 }
 
-// Toggle completion (works offline)
-async function toggleTodo(id: string) {
-  const todo = localTodos.find(t => t.id === id);
-  if (!todo) return;
-
-  const updated = await todos.update(
-    id,
-    { completed: !todo.completed },
-    { optimistic: true }
-  );
-
-  // Update local state immediately
-  const index = localTodos.findIndex(t => t.id === id);
-  localTodos[index] = { ...todo, ...updated };
-  renderTodos();
+// Update
+async function toggleTodo(id: string, completed: boolean) {
+  return await todos.update(id, { completed: !completed });
 }
 
-// Delete todo (works offline)
+// Delete
 async function deleteTodo(id: string) {
-  await todos.delete(id, { optimistic: true });
-
-  // Remove from local state immediately
-  localTodos = localTodos.filter(t => t.id !== id);
-  renderTodos();
+  await todos.delete(id);
 }
 ```
 

@@ -1,6 +1,16 @@
 import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
-import { ResourceError, formatErrorResponse } from "@/resource/error";
+import {
+  ResourceError,
+  formatRFC7807Error,
+  RateLimitError,
+  ERROR_TYPES,
+  ProblemDetail,
+} from "@/resource/error";
+
+export interface RequestWithId extends Request {
+  requestId?: string;
+}
 
 export const errorMiddleware = (
   error: unknown,
@@ -8,7 +18,18 @@ export const errorMiddleware = (
   res: Response,
   _next: NextFunction
 ): void => {
-  console.error(`[ERROR] ${req.method} ${req.path}:`, error);
+  const requestId = (req as RequestWithId).requestId;
+
+  console.error(
+    JSON.stringify({
+      level: "error",
+      requestId,
+      method: req.method,
+      path: req.path,
+      error: error instanceof Error ? error.message : String(error),
+      stack: process.env.CONCAVE_DEBUG === "1" && error instanceof Error ? error.stack : undefined,
+    })
+  );
 
   let statusCode = 500;
   if (error instanceof ResourceError) {
@@ -17,8 +38,16 @@ export const errorMiddleware = (
     statusCode = 400;
   }
 
-  const response = formatErrorResponse(error);
-  res.status(statusCode).json(response);
+  const problem = formatRFC7807Error(error, requestId);
+
+  if (error instanceof RateLimitError) {
+    res.set("Retry-After", String(Math.ceil(error.retryAfter / 1000)));
+  }
+
+  res
+    .status(statusCode)
+    .set("Content-Type", "application/problem+json")
+    .json(problem);
 };
 
 export const asyncHandler = <T>(
@@ -34,10 +63,20 @@ export const notFoundHandler = (
   res: Response,
   _next: NextFunction
 ): void => {
-  res.status(404).json({
-    error: {
-      code: "NOT_FOUND",
-      message: `Route ${req.method} ${req.path} not found`,
-    },
-  });
+  const requestId = (req as RequestWithId).requestId;
+
+  const problem: ProblemDetail = {
+    type: ERROR_TYPES.NOT_FOUND,
+    title: "Not found",
+    status: 404,
+    detail: `Route ${req.method} ${req.path} not found`,
+    code: "NOT_FOUND",
+  };
+
+  if (requestId) {
+    problem.instance = `/requests/${requestId}`;
+    problem.requestId = requestId;
+  }
+
+  res.status(404).set("Content-Type", "application/problem+json").json(problem);
 };

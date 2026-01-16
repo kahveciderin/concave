@@ -27,9 +27,14 @@ export interface BaseEvent {
   timestamp: number;
 }
 
+export interface EventMeta {
+  optimisticId?: string;
+}
+
 export interface AddedEvent<T = Record<string, unknown>> extends BaseEvent {
   type: "added";
   object: T;
+  meta?: EventMeta;
 }
 
 export interface ExistingEvent<T = Record<string, unknown>> extends BaseEvent {
@@ -222,6 +227,43 @@ export interface BatchConfig {
   delete?: number;
 }
 
+export interface SSEConfig {
+  maxSubscriptionsPerUser?: number;
+  maxSubscriptionsPerIP?: number;
+  maxTotalSubscriptions?: number;
+  heartbeatMs?: number;
+  maxQueueBytes?: number;
+  onBackpressure?: "drop" | "invalidate" | "disconnect";
+}
+
+export interface FilterConfig {
+  maxLength?: number;
+  maxDepth?: number;
+  maxNodes?: number;
+  allowedOperators?: string[];
+  allowedFields?: string[];
+}
+
+export interface FieldPolicies {
+  readable?: string[];
+  writable?: string[];
+  filterable?: string[];
+  sortable?: string[];
+  aggregatable?: {
+    groupBy?: string[];
+    metrics?: string[];
+  };
+}
+
+export interface ResourceCapabilities {
+  enableAggregations?: boolean;
+  enableBatch?: boolean;
+  enableSubscribe?: boolean;
+  enableCreate?: boolean;
+  enableUpdate?: boolean;
+  enableDelete?: boolean;
+}
+
 export interface ResourceConfig<
   TConfig extends TableConfig,
   TTable extends Table<TConfig>,
@@ -232,10 +274,17 @@ export interface ResourceConfig<
   pagination?: {
     defaultLimit?: number;
     maxLimit?: number;
+    cursorMaxAgeMs?: number;
+    nullsPosition?: "first" | "last";
   };
   rateLimit?: RateLimitConfig;
   auth?: ScopeConfig;
   procedures?: Record<string, ProcedureDefinition>;
   hooks?: LifecycleHooks<TConfig>;
   customOperators?: Record<string, CustomOperator>;
+  sse?: SSEConfig;
+  filter?: FilterConfig;
+  fields?: FieldPolicies;
+  capabilities?: ResourceCapabilities;
+  generatedFields?: string[];
 }

@@ -276,7 +276,7 @@ describe("OfflineManager", () => {
   let mockCompleteHandler: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    mockSyncHandler = vi.fn().mockResolvedValue(undefined);
+    mockSyncHandler = vi.fn().mockResolvedValue({ success: true });
     mockFailedHandler = vi.fn();
     mockCompleteHandler = vi.fn();
 
@@ -336,15 +336,16 @@ describe("OfflineManager", () => {
       // manually set offline then queue
       (manager as any).isOnline = false;
 
+      // Use different resources to avoid dedupe detection
       await manager.queueMutation("create", "/users", { name: "First" });
-      await manager.queueMutation("create", "/users", { name: "Second" });
+      await manager.queueMutation("create", "/posts", { title: "Second" });
 
       (manager as any).isOnline = true;
       await manager.syncPendingMutations();
 
       expect(mockSyncHandler).toHaveBeenCalledTimes(2);
       expect(mockSyncHandler.mock.calls[0][0].data.name).toBe("First");
-      expect(mockSyncHandler.mock.calls[1][0].data.name).toBe("Second");
+      expect(mockSyncHandler.mock.calls[1][0].data.title).toBe("Second");
     });
 
     it("should remove mutation after successful sync", async () => {
@@ -408,6 +409,7 @@ describe("OfflineManager", () => {
 
       mockSyncHandler.mockImplementationOnce(async () => {
         await firstPromise;
+        return { success: true };
       });
 
       (manager as any).isOnline = false;
@@ -557,5 +559,300 @@ describe("createOfflineManager", () => {
     expect(manager).toBeDefined();
     expect(typeof manager.queueMutation).toBe("function");
     expect(typeof manager.syncPendingMutations).toBe("function");
+  });
+});
+
+describe("ID remapping", () => {
+  it("should call onIdRemapped when server returns different ID", async () => {
+    const onIdRemapped = vi.fn();
+    const mockSyncHandler = vi.fn().mockResolvedValue({
+      success: true,
+      serverId: "server-123",
+    });
+
+    const manager = new OfflineManager({
+      config: { enabled: true },
+      onMutationSync: mockSyncHandler,
+      onIdRemapped,
+    });
+
+    // Queue with optimistic ID
+    (manager as any).isOnline = false;
+    await manager.queueMutation("create", "/users", { name: "Test" }, undefined, "optimistic-abc");
+
+    // Sync
+    (manager as any).isOnline = true;
+    await manager.syncPendingMutations();
+
+    expect(onIdRemapped).toHaveBeenCalledWith("optimistic-abc", "server-123");
+  });
+
+  it("should store ID mapping internally", async () => {
+    const mockSyncHandler = vi.fn().mockResolvedValue({
+      success: true,
+      serverId: "server-456",
+    });
+
+    const manager = new OfflineManager({
+      config: { enabled: true },
+      onMutationSync: mockSyncHandler,
+    });
+
+    (manager as any).isOnline = false;
+    await manager.queueMutation("create", "/users", { name: "Test" }, undefined, "optimistic-xyz");
+
+    (manager as any).isOnline = true;
+    await manager.syncPendingMutations();
+
+    expect(manager.getServerIdForOptimisticId("optimistic-xyz")).toBe("server-456");
+  });
+
+  it("should not call onIdRemapped when IDs match", async () => {
+    const onIdRemapped = vi.fn();
+    const mockSyncHandler = vi.fn().mockResolvedValue({
+      success: true,
+      serverId: "optimistic-same",
+    });
+
+    const manager = new OfflineManager({
+      config: { enabled: true },
+      onMutationSync: mockSyncHandler,
+      onIdRemapped,
+    });
+
+    (manager as any).isOnline = false;
+    await manager.queueMutation("create", "/users", { name: "Test" }, undefined, "optimistic-same");
+
+    (manager as any).isOnline = true;
+    await manager.syncPendingMutations();
+
+    expect(onIdRemapped).not.toHaveBeenCalled();
+  });
+
+  it("should resolve optimistic ID to server ID using resolveId", async () => {
+    const mockSyncHandler = vi.fn().mockResolvedValue({
+      success: true,
+      serverId: "server-789",
+    });
+
+    const manager = new OfflineManager({
+      config: { enabled: true },
+      onMutationSync: mockSyncHandler,
+    });
+
+    (manager as any).isOnline = false;
+    await manager.queueMutation("create", "/users", { name: "Test" }, undefined, "optimistic-resolve");
+
+    (manager as any).isOnline = true;
+    await manager.syncPendingMutations();
+
+    // resolveId should return server ID for optimistic ID
+    expect(manager.resolveId("optimistic-resolve")).toBe("server-789");
+    // resolveId should return the same ID if not in mappings
+    expect(manager.resolveId("unknown-id")).toBe("unknown-id");
+  });
+
+  it("should clear ID mappings when clearing mutations", async () => {
+    const mockSyncHandler = vi.fn().mockResolvedValue({
+      success: true,
+      serverId: "server-clear",
+    });
+
+    const manager = new OfflineManager({
+      config: { enabled: true },
+      onMutationSync: mockSyncHandler,
+    });
+
+    (manager as any).isOnline = false;
+    await manager.queueMutation("create", "/users", { name: "Test" }, undefined, "optimistic-clear");
+
+    (manager as any).isOnline = true;
+    await manager.syncPendingMutations();
+
+    expect(manager.resolveId("optimistic-clear")).toBe("server-clear");
+
+    await manager.clearMutations();
+
+    // After clearing, resolveId should return the ID as-is
+    expect(manager.resolveId("optimistic-clear")).toBe("optimistic-clear");
+  });
+});
+
+describe("Optimistic update flow", () => {
+  it("should return immediately with optimistic result even when network hangs (default behavior)", async () => {
+    // Request hangs forever
+    const mockRequest = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const mockTransport = {
+      request: mockRequest,
+      createEventSource: vi.fn(),
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+    };
+
+    const offlineManager = new OfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+    });
+
+    const { Repository } = await import("../../src/client/repository");
+    const repository = new Repository({
+      transport: mockTransport,
+      resourcePath: "/todos",
+      offline: offlineManager,
+    });
+
+    // Should return immediately without waiting for network (default behavior)
+    const result = await repository.create({ title: "Test Todo", completed: false });
+
+    expect(result.id).toContain("optimistic_");
+    expect(result.title).toBe("Test Todo");
+  });
+
+  it("should queue mutation on background sync failure", async () => {
+    const mockRequest = vi.fn().mockRejectedValue(new Error("Network error"));
+    const mockTransport = {
+      request: mockRequest,
+      createEventSource: vi.fn(),
+      setHeader: vi.fn(),
+      removeHeader: vi.fn(),
+    };
+
+    const offlineManager = new OfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+    });
+
+    const { Repository } = await import("../../src/client/repository");
+    const repository = new Repository({
+      transport: mockTransport,
+      resourcePath: "/todos",
+      offline: offlineManager,
+    });
+
+    // Optimistic is default, no need to specify
+    const result = await repository.create({ title: "Test Todo", completed: false });
+
+    // Wait for background sync to fail
+    await new Promise((r) => setTimeout(r, 10));
+
+    const pending = await offlineManager.getPendingMutations();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].type).toBe("create");
+    expect(pending[0].optimisticId).toBe(result.id);
+  });
+
+  it("should sync optimistic mutations and remap IDs when back online", async () => {
+    const onIdRemapped = vi.fn();
+    const mockSyncHandler = vi.fn().mockResolvedValue({
+      success: true,
+      serverId: "real-server-id-123",
+    });
+
+    const offlineManager = new OfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+      onMutationSync: mockSyncHandler,
+      onIdRemapped,
+    });
+
+    // Simulate offline state
+    (offlineManager as any).isOnline = false;
+
+    // Queue a create mutation
+    await offlineManager.queueMutation(
+      "create",
+      "/todos",
+      { title: "Offline Todo" },
+      undefined,
+      "optimistic_12345"
+    );
+
+    // Verify mutation is pending
+    let pending = await offlineManager.getPendingMutations();
+    expect(pending).toHaveLength(1);
+
+    // Simulate coming back online and syncing
+    (offlineManager as any).isOnline = true;
+    await offlineManager.syncPendingMutations();
+
+    // ID should be remapped
+    expect(onIdRemapped).toHaveBeenCalledWith("optimistic_12345", "real-server-id-123");
+
+    // Mutation should be removed after sync
+    pending = await offlineManager.getPendingMutations();
+    expect(pending).toHaveLength(0);
+
+    // Future operations can use resolveId to get the real ID
+    expect(offlineManager.resolveId("optimistic_12345")).toBe("real-server-id-123");
+  });
+
+  it("should use resolved ID when updating a previously created optimistic item", async () => {
+    const syncedMutations: any[] = [];
+    const mockSyncHandler = vi.fn().mockImplementation(async (mutation) => {
+      syncedMutations.push({ ...mutation });
+      if (mutation.type === "create") {
+        return { success: true, serverId: "server-todo-456" };
+      }
+      return { success: true };
+    });
+
+    const offlineManager = new OfflineManager({
+      config: { enabled: true, storage: new InMemoryOfflineStorage() },
+      onMutationSync: mockSyncHandler,
+    });
+
+    // Create offline
+    (offlineManager as any).isOnline = false;
+    await offlineManager.queueMutation(
+      "create",
+      "/todos",
+      { title: "New Todo" },
+      undefined,
+      "optimistic_abc"
+    );
+
+    // Update the same item offline (using optimistic ID)
+    await offlineManager.queueMutation(
+      "update",
+      "/todos",
+      { completed: true },
+      "optimistic_abc"
+    );
+
+    // Come online and sync
+    (offlineManager as any).isOnline = true;
+    await offlineManager.syncPendingMutations();
+
+    // Both mutations should have been synced
+    expect(syncedMutations).toHaveLength(2);
+    expect(syncedMutations[0].type).toBe("create");
+    expect(syncedMutations[1].type).toBe("update");
+
+    // After sync, resolveId should map the optimistic ID to server ID
+    expect(offlineManager.resolveId("optimistic_abc")).toBe("server-todo-456");
+  });
+});
+
+describe("registerIdMapping", () => {
+  it("should register mapping and call onIdRemapped", () => {
+    const onIdRemapped = vi.fn();
+    const manager = new OfflineManager({
+      config: { enabled: true },
+      onIdRemapped,
+    });
+
+    manager.registerIdMapping("optimistic_1", "server_1");
+
+    expect(manager.resolveId("optimistic_1")).toBe("server_1");
+    expect(onIdRemapped).toHaveBeenCalledWith("optimistic_1", "server_1");
+  });
+
+  it("should not call onIdRemapped if IDs are the same", () => {
+    const onIdRemapped = vi.fn();
+    const manager = new OfflineManager({
+      config: { enabled: true },
+      onIdRemapped,
+    });
+
+    manager.registerIdMapping("same_id", "same_id");
+
+    expect(onIdRemapped).not.toHaveBeenCalled();
   });
 });

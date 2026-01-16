@@ -606,7 +606,8 @@ describe("Filter System", () => {
 
   describe("Boundary Conditions", () => {
     it("should handle very long strings", () => {
-      const longName = "A".repeat(10000);
+      // Use a string that's long but within the default maxLength (4096)
+      const longName = "A".repeat(2000);
       const testItem: TestItem = {
         id: 1,
         name: longName,
@@ -619,6 +620,11 @@ describe("Filter System", () => {
       };
 
       expect(filter.execute(`name=="${longName}"`, testItem)).toBe(true);
+    });
+
+    it("should reject filter expressions exceeding max length", () => {
+      const veryLongName = "A".repeat(5000);
+      expect(() => filter.execute(`name=="${veryLongName}"`, {} as TestItem)).toThrow();
     });
 
     it("should handle special characters in strings", () => {

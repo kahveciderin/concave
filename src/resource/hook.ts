@@ -34,7 +34,7 @@ import {
 } from "./subscription";
 import {
   createPagination,
-  decodeCursor,
+  decodeCursorLegacy,
   parseOrderBy,
   OrderByField,
 } from "./pagination";
@@ -93,7 +93,6 @@ export const useResource = <TConfig extends TableConfig>(
   config: ResourceConfig<TConfig, Table<TConfig>>
 ): IRouter => {
   const db = config.db;
-  const handlerId = uuidv4();
   const resourceName = getTableName(schema);
   const idColumnName = config.id.name;
 
@@ -111,8 +110,16 @@ export const useResource = <TConfig extends TableConfig>(
 
   const scopeResolver = createScopeResolver(config.auth, resourceName);
 
-  const insertSchema = createInsertSchema(schema);
+  const baseInsertSchema = createInsertSchema(schema);
   const updateSchema = createUpdateSchema(schema);
+
+  const generatedFieldsPartial = config.generatedFields?.length
+    ? Object.fromEntries(config.generatedFields.map((f) => [f, true] as const))
+    : null;
+
+  const insertSchema = generatedFieldsPartial
+    ? (baseInsertSchema.partial as any)(generatedFieldsPartial)
+    : baseInsertSchema;
 
   const parseInsert = (data: unknown) => {
     try {
@@ -337,7 +344,7 @@ export const useResource = <TConfig extends TableConfig>(
     if (eventPollInterval) return;
 
     eventPollInterval = setInterval(async () => {
-      if (!isHandlerConnected(handlerId)) {
+      if (activeClients === 0) {
         stopEventPolling();
       }
     }, 30000);
@@ -350,37 +357,84 @@ export const useResource = <TConfig extends TableConfig>(
     }
   };
 
+  const sseConfig = {
+    maxSubscriptionsPerUser: config.sse?.maxSubscriptionsPerUser ?? 10,
+    maxSubscriptionsPerIP: config.sse?.maxSubscriptionsPerIP ?? 50,
+    heartbeatMs: config.sse?.heartbeatMs ?? 20000,
+    maxQueueBytes: config.sse?.maxQueueBytes ?? 65536,
+    onBackpressure: config.sse?.onBackpressure ?? "invalidate",
+  };
+
+  const userSubscriptionCounts = new Map<string, number>();
+  const ipSubscriptionCounts = new Map<string, number>();
+
   router.get(
     "/subscribe",
     asyncHandler(async (req, res) => {
       const user = getUser(req);
       const scope = await scopeResolver.resolve("subscribe", user);
       const filterQuery = req.query.filter?.toString() ?? "";
-      const resumeFrom = req.query.resumeFrom
-        ? parseInt(req.query.resumeFrom.toString(), 10)
-        : undefined;
+      const handlerId = uuidv4();
+
+      const resumeFrom = req.headers["last-event-id"]
+        ? parseInt(req.headers["last-event-id"] as string, 10)
+        : req.query.resumeFrom
+          ? parseInt(req.query.resumeFrom.toString(), 10)
+          : undefined;
+
+      const userId = user?.id ?? "anonymous";
+      const clientIP = req.ip ?? req.socket.remoteAddress ?? "unknown";
+
+      const userCount = userSubscriptionCounts.get(userId) ?? 0;
+      if (userCount >= sseConfig.maxSubscriptionsPerUser) {
+        res.status(429).json({
+          type: "/__concave/problems/rate-limit-exceeded",
+          title: "Too many subscriptions",
+          status: 429,
+          detail: `Maximum ${sseConfig.maxSubscriptionsPerUser} subscriptions per user`,
+        });
+        return;
+      }
+
+      const ipCount = ipSubscriptionCounts.get(clientIP) ?? 0;
+      if (ipCount >= sseConfig.maxSubscriptionsPerIP) {
+        res.status(429).json({
+          type: "/__concave/problems/rate-limit-exceeded",
+          title: "Too many subscriptions",
+          status: 429,
+          detail: `Maximum ${sseConfig.maxSubscriptionsPerIP} subscriptions per IP`,
+        });
+        return;
+      }
 
       res.set({
         "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff",
       });
       res.flushHeaders?.();
+
+      userSubscriptionCounts.set(userId, userCount + 1);
+      ipSubscriptionCounts.set(clientIP, ipCount + 1);
 
       registerHandler(handlerId, res);
       activeClients++;
       startEventPolling();
 
-      const currentSeq = changelog.getCurrentSequence();
-      res.write(`event: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
+      const currentSeq = await changelog.getCurrentSequence();
+      res.write(`id: ${currentSeq}\nevent: connected\ndata: ${JSON.stringify({ seq: currentSeq })}\n\n`);
+
+      let queuedBytes = 0;
 
       const heartbeat = setInterval(() => {
         if (res.writableEnded) {
           clearInterval(heartbeat);
           return;
         }
-        res.write(`: ping\n\n`);
-      }, 20000);
+        res.write(`: ping ${Date.now()}\n\n`);
+      }, sseConfig.heartbeatMs);
 
       const subscriptionId = await createSubscription({
         resource: resourceName,
@@ -389,6 +443,10 @@ export const useResource = <TConfig extends TableConfig>(
         authId: user?.id ?? null,
         scopeFilter: scope.toString() !== "*" ? scope.toString() : undefined,
         authExpiresAt: user?.sessionExpiresAt,
+      });
+
+      res.on("drain", () => {
+        queuedBytes = 0;
       });
 
       if (resumeFrom !== undefined) {
@@ -409,18 +467,29 @@ export const useResource = <TConfig extends TableConfig>(
         );
       }
 
-      req.on("close", async () => {
+      const cleanup = async () => {
         clearInterval(heartbeat);
         activeClients--;
 
+        userSubscriptionCounts.set(
+          userId,
+          Math.max(0, (userSubscriptionCounts.get(userId) ?? 1) - 1)
+        );
+        ipSubscriptionCounts.set(
+          clientIP,
+          Math.max(0, (ipSubscriptionCounts.get(clientIP) ?? 1) - 1)
+        );
+
+        unregisterHandler(handlerId);
+
         if (activeClients === 0) {
           stopEventPolling();
-          unregisterHandler(handlerId);
         }
 
         await removeSubscription(subscriptionId);
-      });
+      };
 
+      req.on("close", cleanup);
       req.on("error", () => {
         clearInterval(heartbeat);
       });
@@ -508,14 +577,24 @@ export const useResource = <TConfig extends TableConfig>(
 
       recordCreate(resourceName, String(createdObj[idColumnName]), createdObj);
 
+      const optimisticId = req.headers["x-concave-optimistic-id"] as string | undefined;
+      const optimisticIds = optimisticId
+        ? new Map([[String(createdObj[idColumnName]), optimisticId]])
+        : undefined;
+
       await pushInsertsToSubscriptions(
         resourceName,
         filterer as any,
         [createdObj],
-        idColumnName
+        idColumnName,
+        optimisticIds
       );
 
-      res.status(201).json(created);
+      const response = optimisticId
+        ? { ...created, _optimisticId: optimisticId }
+        : created;
+
+      res.status(201).json(response);
     })
   );
 
@@ -536,7 +615,7 @@ export const useResource = <TConfig extends TableConfig>(
       }
 
       if (paginationParams.cursor) {
-        const cursorData = decodeCursor(paginationParams.cursor);
+        const cursorData = decodeCursorLegacy(paginationParams.cursor);
         if (cursorData) {
           const cursorCondition = pagination.buildCursorCondition(
             cursorData,

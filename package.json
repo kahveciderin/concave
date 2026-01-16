@@ -22,6 +22,10 @@
     "./auth": {
       "types": "./dist/auth/index.d.ts",
       "import": "./dist/auth/index.js"
+    },
+    "./client/react": {
+      "types": "./dist/client/react.d.ts",
+      "import": "./dist/client/react.js"
     }
   },
   "files": [
@@ -31,13 +35,20 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "prepublishOnly": "npm run build",
-    "start": "node dist/main.js",
-    "dev": "tsx watch src/main.ts",
+    "start": "node dist/index.js",
     "lint": "eslint 'src/**/*.ts'",
-    "db:push": "drizzle-kit push",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "example:dev": "pnpm build && pnpm example:frontend:build && tsx watch --tsconfig example/tsconfig.json example/src/main.ts",
+    "example:start": "node example/dist/main.js",
+    "example:build": "tsc -p example/tsconfig.json && tsc-alias -p example/tsconfig.json",
+    "example:frontend:install": "cd example/frontend && pnpm install",
+    "example:frontend:build": "cd example/frontend && pnpm build",
+    "example:frontend:dev": "cd example/frontend && pnpm dev",
+    "example:setup": "pnpm build && pnpm example:frontend:install && pnpm example:frontend:build",
+    "example:db:push": "drizzle-kit push",
+    "example:typegen": "tsx example/scripts/typegen.ts"
   },
   "keywords": [
     "api",
@@ -57,16 +68,22 @@
     "url": ""
   },
   "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^17.2.3",
     "drizzle-zod": "^0.8.3",
     "uuid": "^13.0.0"
   },
   "peerDependencies": {
     "drizzle-orm": ">=0.30.0",
     "express": ">=4.0.0",
+    "react": ">=18.0.0",
     "zod": ">=3.0.0"
   },
   "peerDependenciesMeta": {
     "express": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   },
@@ -76,6 +93,7 @@
     "@types/cookie-parser": "^1.4.8",
     "@types/express": "^5.0.6",
     "@types/node": "^25.0.8",
+    "@types/react": "^18.3.12",
     "@types/supertest": "^6.0.3",
     "@types/uuid": "^10.0.0",
     "better-sqlite3": "^12.6.0",

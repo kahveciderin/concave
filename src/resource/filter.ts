@@ -5,12 +5,51 @@ import {
   not,
   or,
   sql,
+  isNull as drizzleIsNull,
+  isNotNull as drizzleIsNotNull,
   SQLWrapper,
   Table,
   TableConfig,
 } from "drizzle-orm";
 import { CustomOperator } from "./types";
 import { FilterParseError } from "./error";
+
+export interface FilterConfig {
+  maxLength?: number;
+  maxDepth?: number;
+  maxNodes?: number;
+  allowedOperators?: string[];
+  allowedFields?: string[];
+}
+
+export const DEFAULT_FILTER_CONFIG: FilterConfig = {
+  maxLength: 4096,
+  maxDepth: 10,
+  maxNodes: 100,
+};
+
+interface ParserContext {
+  nodeCount: number;
+  maxDepthSeen: number;
+  config: FilterConfig;
+}
+
+const validateComplexity = (ctx: ParserContext, depth: number): void => {
+  ctx.nodeCount++;
+  ctx.maxDepthSeen = Math.max(ctx.maxDepthSeen, depth);
+
+  if (ctx.config.maxNodes && ctx.nodeCount > ctx.config.maxNodes) {
+    throw new FilterParseError("Filter has too many conditions", {
+      suggestion: `Maximum ${ctx.config.maxNodes} conditions allowed`,
+    });
+  }
+
+  if (ctx.config.maxDepth && depth > ctx.config.maxDepth) {
+    throw new FilterParseError("Filter is too deeply nested", {
+      suggestion: `Maximum nesting depth is ${ctx.config.maxDepth}`,
+    });
+  }
+};
 
 const likePatternToRegex = (pattern: string): RegExp => {
   let regex = "^";
@@ -93,9 +132,12 @@ export interface CompiledFilterExpression {
 
 export const createResourceFilter = <TConfig extends TableConfig>(
   schema: Table<TConfig>,
-  customOperators: Record<string, CustomOperator> = {}
+  customOperators: Record<string, CustomOperator> = {},
+  filterConfig: FilterConfig = DEFAULT_FILTER_CONFIG
 ) => {
   type SchemaType = InferSelectModel<typeof schema>;
+
+  const config = { ...DEFAULT_FILTER_CONFIG, ...filterConfig };
 
   const builtinOperators: OperatorDefinition[] = [
     {
@@ -143,6 +185,33 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       op: "<",
       convert: (lhs, rhs) => sql`${lhs} < ${rhs}`,
       execute: (lhs, rhs) => safeCompare(lhs, rhs) < 0,
+    },
+    {
+      op: "=isnull=",
+      convert: (lhs, rhs) => {
+        const checkNull = String(rhs).toLowerCase() === "true";
+        return checkNull ? drizzleIsNull(lhs) : drizzleIsNotNull(lhs);
+      },
+      execute: (lhs, rhs) => {
+        const checkNull = String(rhs).toLowerCase() === "true";
+        return checkNull ? lhs === null || lhs === undefined : lhs !== null && lhs !== undefined;
+      },
+    },
+    {
+      op: "=in=",
+      convert: (lhs, rhs) => sql`${lhs} IN (${rhs})`,
+      execute: (lhs, rhs) => {
+        const arr = Array.isArray(rhs) ? rhs : [rhs];
+        return arr.some((item) => String(item) === String(lhs));
+      },
+    },
+    {
+      op: "=out=",
+      convert: (lhs, rhs) => sql`${lhs} NOT IN (${rhs})`,
+      execute: (lhs, rhs) => {
+        const arr = Array.isArray(rhs) ? rhs : [rhs];
+        return !arr.some((item) => String(item) === String(lhs));
+      },
     },
   ];
 
@@ -238,6 +307,38 @@ export const createResourceFilter = <TConfig extends TableConfig>(
 
     execute(_object: SchemaType): unknown {
       return this.value;
+    }
+  }
+
+  class BooleanFilterValue extends FilterValue {
+    constructor(private value: boolean) {
+      super();
+    }
+
+    print(): string {
+      return this.value.toString();
+    }
+
+    convert(): SQLWrapper {
+      return sql`${this.value}`;
+    }
+
+    execute(_object: SchemaType): unknown {
+      return this.value;
+    }
+  }
+
+  class NullFilterValue extends FilterValue {
+    print(): string {
+      return "null";
+    }
+
+    convert(): SQLWrapper {
+      return sql`NULL`;
+    }
+
+    execute(_object: SchemaType): unknown {
+      return null;
     }
   }
 
@@ -492,7 +593,9 @@ export const createResourceFilter = <TConfig extends TableConfig>(
   ): { value: FilterValue; remaining: string } => {
     expression = skipWhitespace(expression);
     if (expression.length === 0) {
-      throw new FilterParseError("Invalid value");
+      throw new FilterParseError("Invalid value", {
+        suggestion: "Expected a value (string, number, boolean, or null)",
+      });
     }
 
     if (expression[0] === '"') {
@@ -506,9 +609,26 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       return parseNumberValue(expression);
     } else if (expression[0] === "(") {
       return parseSetValue(expression);
-    } else {
-      throw new FilterParseError("Unknown value type");
+    } else if (expression.startsWith("true")) {
+      const nextChar = expression[4];
+      if (!nextChar || !isAlNum(nextChar)) {
+        return { value: new BooleanFilterValue(true), remaining: expression.slice(4) };
+      }
+    } else if (expression.startsWith("false")) {
+      const nextChar = expression[5];
+      if (!nextChar || !isAlNum(nextChar)) {
+        return { value: new BooleanFilterValue(false), remaining: expression.slice(5) };
+      }
+    } else if (expression.startsWith("null")) {
+      const nextChar = expression[4];
+      if (!nextChar || !isAlNum(nextChar)) {
+        return { value: new NullFilterValue(), remaining: expression.slice(4) };
+      }
     }
+    
+    throw new FilterParseError("Unknown value type", {
+      suggestion: "Expected a quoted string, number, true, false, or null",
+    });
   };
 
   const parseSetValue = (
@@ -653,14 +773,222 @@ export const createResourceFilter = <TConfig extends TableConfig>(
       return new EmptyFilterExpression();
     }
 
-    const data = parseOr(expression);
+    if (config.maxLength && expression.length > config.maxLength) {
+      throw new FilterParseError("Filter exceeds maximum length", {
+        suggestion: `Maximum filter length is ${config.maxLength} characters`,
+      });
+    }
+
+    const ctx: ParserContext = {
+      nodeCount: 0,
+      maxDepthSeen: 0,
+      config,
+    };
+
+    const data = parseOrWithContext(expression, ctx, 0);
     if (data.remaining.length > 0) {
       throw new FilterParseError(
-        `Unexpected input after parsing filter expression: ${data.remaining}`
+        `Unexpected input after parsing filter expression: ${data.remaining}`,
+        {
+          position: expression.length - data.remaining.length,
+        }
       );
     }
 
     return data.expr;
+  };
+
+  const parseTermWithContext = (
+    expression: string,
+    ctx: ParserContext,
+    depth: number
+  ): { expr: FilterExpression; remaining: string } => {
+    expression = skipWhitespace(expression);
+    validateComplexity(ctx, depth);
+
+    if (expression.startsWith("(")) {
+      expression = skipWhitespace(expression.slice(1));
+      const { expr: innerExpr, remaining: remAfterInner } = parseOrWithContext(
+        expression,
+        ctx,
+        depth + 1
+      );
+      expression = skipWhitespace(remAfterInner);
+      if (expression[0] !== ")") {
+        throw new FilterParseError(
+          "Unterminated parenthesis in filter expression",
+          { position: expression.length }
+        );
+      }
+      expression = skipWhitespace(expression.slice(1));
+      return { expr: innerExpr, remaining: expression };
+    }
+
+    const { identifier, remaining: remAfterIdent } =
+      parseIdentifier(expression);
+    expression = skipWhitespace(remAfterIdent);
+
+    if (config.allowedFields && !config.allowedFields.includes(identifier)) {
+      throw new FilterParseError(`Field '${identifier}' is not filterable`, {
+        allowedFields: config.allowedFields,
+      });
+    }
+
+    const { operator, remaining: remAfterOp } = parseOperatorWithValidation(
+      expression,
+      config.allowedOperators
+    );
+    expression = skipWhitespace(remAfterOp);
+    const { value, remaining: remAfterValue } = parseValue(expression);
+    expression = skipWhitespace(remAfterValue);
+
+    const newExpr = new OperationFilterExpression(identifier, operator, value);
+
+    return { expr: newExpr, remaining: expression };
+  };
+
+  const parseAndWithContext = (
+    expression: string,
+    ctx: ParserContext,
+    depth: number
+  ): { expr: FilterExpression; remaining: string } => {
+    let ret: FilterExpression = new EmptyFilterExpression();
+    expression = skipWhitespace(expression);
+
+    while (expression.length > 0) {
+      const { expr, remaining } = parseTermWithContext(expression, ctx, depth);
+      expression = skipWhitespace(remaining);
+
+      if (ret instanceof EmptyFilterExpression) {
+        ret = expr;
+      } else if (ret instanceof AndFilterExpression) {
+        ret.addExpression(expr);
+      } else {
+        ret = new AndFilterExpression([ret, expr]);
+      }
+
+      if (
+        expression.startsWith(";") ||
+        expression.startsWith("&&") ||
+        (expression.startsWith("and") && !isAlNum(expression[3] ?? "")) ||
+        (expression.startsWith("AND") && !isAlNum(expression[3] ?? ""))
+      ) {
+        expression = skipWhitespace(
+          expression.startsWith(";")
+            ? expression.slice(1)
+            : expression.startsWith("&&")
+              ? expression.slice(2)
+              : expression.slice(3)
+        );
+        continue;
+      }
+
+      break;
+    }
+
+    return { expr: ret, remaining: expression };
+  };
+
+  const parseOrWithContext = (
+    expression: string,
+    ctx: ParserContext,
+    depth: number
+  ): { expr: FilterExpression; remaining: string } => {
+    let ret: FilterExpression = new EmptyFilterExpression();
+    expression = skipWhitespace(expression);
+
+    while (expression.length > 0) {
+      const { expr, remaining } = parseAndWithContext(expression, ctx, depth);
+      expression = skipWhitespace(remaining);
+
+      if (ret instanceof EmptyFilterExpression) {
+        ret = expr;
+      } else if (ret instanceof OrFilterExpression) {
+        ret.addExpression(expr);
+      } else {
+        ret = new OrFilterExpression([ret, expr]);
+      }
+
+      if (expression.startsWith(",")) {
+        expression = skipWhitespace(expression.slice(1));
+        continue;
+      }
+      if (expression.startsWith("||")) {
+        expression = skipWhitespace(expression.slice(2));
+        continue;
+      }
+      if (expression.startsWith("or") && !isAlNum(expression[2] ?? "")) {
+        expression = skipWhitespace(expression.slice(2));
+        continue;
+      }
+      if (expression.startsWith("OR") && !isAlNum(expression[2] ?? "")) {
+        expression = skipWhitespace(expression.slice(2));
+        continue;
+      }
+
+      break;
+    }
+
+    return { expr: ret, remaining: expression };
+  };
+
+  const parseOperatorWithValidation = (
+    expression: string,
+    allowedOperators?: string[]
+  ): { operator: string; remaining: string } => {
+    expression = skipWhitespace(expression);
+
+    if (expression.length === 0) {
+      throw new FilterParseError("Invalid operator start", {
+        suggestion: "Expected an operator",
+      });
+    }
+
+    for (const op of allOperators) {
+      if (expression.startsWith(op.op)) {
+        if (allowedOperators && !allowedOperators.includes(op.op)) {
+          throw new FilterParseError(`Operator '${op.op}' is not allowed`, {
+            allowedOperators,
+          });
+        }
+        return { operator: op.op, remaining: expression.slice(op.op.length) };
+      }
+    }
+
+    if (expression[0] === "=" || expression[0] === "!") {
+      let i = 1;
+      while (i < expression.length && isAlpha(expression[i] ?? "")) {
+        i++;
+      }
+      if (expression[i] !== "=") {
+        throw new FilterParseError("Invalid operator format", {
+          suggestion: "Operators must be in format =name= or symbolic (==, !=, etc.)",
+        });
+      }
+      i++;
+      const operator = expression.slice(0, i);
+      const remaining = expression.slice(i);
+
+      const opDef = allOperators.find((op) => op.op === operator);
+      if (!opDef) {
+        throw new FilterParseError(`Unknown operator: ${operator}`, {
+          suggestion: "Use a valid operator like ==, !=, =isnull=, =in=, etc.",
+          allowedOperators: allOperators.map((o) => o.op),
+        });
+      }
+
+      if (allowedOperators && !allowedOperators.includes(operator)) {
+        throw new FilterParseError(`Operator '${operator}' is not allowed`, {
+          allowedOperators,
+        });
+      }
+
+      return { operator, remaining };
+    } else {
+      throw new FilterParseError("Invalid operator", {
+        suggestion: "Operators must start with = or ! or be symbolic (>, <, etc.)",
+      });
+    }
   };
 
   const filterCache = new Map<string, FilterExpression>();
@@ -689,6 +1017,8 @@ export const createResourceFilter = <TConfig extends TableConfig>(
     clearCache: () => {
       filterCache.clear();
     },
+    getConfig: () => config,
+    getOperators: () => allOperators.map((op) => op.op),
   };
 };
 

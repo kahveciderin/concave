@@ -106,7 +106,7 @@ export class SubscriptionManager<T extends { id: string }> implements Subscripti
         this._state.items.set(id, item);
 
         if (event.type === "added") {
-          this.config.callbacks?.onAdded?.(item);
+          this.config.callbacks?.onAdded?.(item, event.meta);
         }
         break;
       }

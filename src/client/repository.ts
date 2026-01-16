@@ -103,59 +103,149 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
   }
 
   async create(data: Omit<T, "id">, options: CreateOptions = {}): Promise<T> {
-    if (this.offline && !this.offline.getIsOnline() && options.optimistic) {
-      await this.offline.queueMutation("create", this.resourcePath, data);
-      return { ...data, id: `optimistic_${Date.now()}` } as T;
+    const optimisticId = options.optimisticId ?? `optimistic_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Default to optimistic when offline manager is present (opt-out with optimistic: false)
+    const useOptimistic = this.offline && options.optimistic !== false;
+
+    if (useOptimistic) {
+      const optimisticResult = { ...data, id: optimisticId } as T;
+
+      // Fire off background sync
+      this.backgroundCreate(data, optimisticId);
+
+      return optimisticResult;
     }
 
+    // Non-optimistic: wait for server response
     const response = await this.transport.request<T>({
       method: "POST",
       path: this.resourcePath,
       body: data,
     });
-
     return response.data;
   }
 
+  private backgroundCreate(data: Omit<T, "id">, optimisticId: string): void {
+    this.transport.request<T & { _optimisticId?: string }>({
+      method: "POST",
+      path: this.resourcePath,
+      body: data,
+      headers: {
+        "X-Concave-Optimistic-Id": optimisticId,
+        "X-Idempotency-Key": optimisticId,
+      },
+    }).then(response => {
+      // Success: remap ID if different
+      const serverId = response.data.id;
+      if (serverId !== optimisticId) {
+        this.offline!.registerIdMapping(optimisticId, serverId);
+      }
+    }).catch(() => {
+      // Failure: queue for retry
+      this.offline!.queueMutation("create", this.resourcePath, data, undefined, optimisticId);
+    });
+  }
+
   async update(id: string, data: Partial<T>, options: UpdateOptions = {}): Promise<T> {
-    if (this.offline && !this.offline.getIsOnline() && options.optimistic) {
-      await this.offline.queueMutation("update", this.resourcePath, data, id);
-      return { ...data, id } as T;
+    // Default to optimistic when offline manager is present (opt-out with optimistic: false)
+    const useOptimistic = this.offline && options.optimistic !== false;
+
+    if (useOptimistic) {
+      const optimisticResult = { ...data, id } as T;
+
+      // Fire off background sync
+      this.backgroundUpdate(id, data);
+
+      return optimisticResult;
     }
 
+    // Non-optimistic: wait for server response
     const response = await this.transport.request<T>({
       method: "PATCH",
       path: `${this.resourcePath}/${id}`,
       body: data,
     });
-
     return response.data;
   }
 
+  private backgroundUpdate(id: string, data: Partial<T>): void {
+    // Resolve optimistic ID to server ID if needed
+    const resolvedId = this.offline!.resolveId(id);
+
+    this.transport.request<T>({
+      method: "PATCH",
+      path: `${this.resourcePath}/${resolvedId}`,
+      body: data,
+    }).catch(() => {
+      // Failure: queue for retry (use original id, will be resolved during sync)
+      this.offline!.queueMutation("update", this.resourcePath, data, id);
+    });
+  }
+
   async replace(id: string, data: Omit<T, "id">, options: UpdateOptions = {}): Promise<T> {
-    if (this.offline && !this.offline.getIsOnline() && options.optimistic) {
-      await this.offline.queueMutation("update", this.resourcePath, data, id);
-      return { ...data, id } as T;
+    // Default to optimistic when offline manager is present (opt-out with optimistic: false)
+    const useOptimistic = this.offline && options.optimistic !== false;
+
+    if (useOptimistic) {
+      const optimisticResult = { ...data, id } as T;
+
+      // Fire off background sync
+      this.backgroundReplace(id, data);
+
+      return optimisticResult;
     }
 
+    // Non-optimistic: wait for server response
     const response = await this.transport.request<T>({
       method: "PUT",
       path: `${this.resourcePath}/${id}`,
       body: data,
     });
-
     return response.data;
   }
 
+  private backgroundReplace(id: string, data: Omit<T, "id">): void {
+    // Resolve optimistic ID to server ID if needed
+    const resolvedId = this.offline!.resolveId(id);
+
+    this.transport.request<T>({
+      method: "PUT",
+      path: `${this.resourcePath}/${resolvedId}`,
+      body: data,
+    }).catch(() => {
+      // Failure: queue for retry
+      this.offline!.queueMutation("update", this.resourcePath, data, id);
+    });
+  }
+
   async delete(id: string, options: DeleteOptions = {}): Promise<void> {
-    if (this.offline && !this.offline.getIsOnline() && options.optimistic) {
-      await this.offline.queueMutation("delete", this.resourcePath, undefined, id);
+    // Default to optimistic when offline manager is present (opt-out with optimistic: false)
+    const useOptimistic = this.offline && options.optimistic !== false;
+
+    if (useOptimistic) {
+      // Fire off background sync
+      this.backgroundDelete(id);
       return;
     }
 
+    // Non-optimistic: wait for server response
     await this.transport.request<void>({
       method: "DELETE",
       path: `${this.resourcePath}/${id}`,
+    });
+  }
+
+  private backgroundDelete(id: string): void {
+    // Resolve optimistic ID to server ID if needed
+    const resolvedId = this.offline!.resolveId(id);
+
+    this.transport.request<void>({
+      method: "DELETE",
+      path: `${this.resourcePath}/${resolvedId}`,
+    }).catch(() => {
+      // Failure: queue for retry
+      this.offline!.queueMutation("delete", this.resourcePath, undefined, id);
     });
   }
 

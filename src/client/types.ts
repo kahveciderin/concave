@@ -7,9 +7,14 @@ export interface BaseEvent {
   timestamp: number;
 }
 
+export interface EventMeta {
+  optimisticId?: string;
+}
+
 export interface AddedEvent<T = unknown> extends BaseEvent {
   type: "added";
   object: T;
+  meta?: EventMeta;
 }
 
 export interface ExistingEvent<T = unknown> extends BaseEvent {
@@ -106,6 +111,7 @@ export interface SubscribeOptions {
 
 export interface CreateOptions {
   optimistic?: boolean;
+  optimisticId?: string;
 }
 
 export interface UpdateOptions {
@@ -137,7 +143,7 @@ export interface SubscriptionState<T> {
 }
 
 export interface SubscriptionCallbacks<T> {
-  onAdded?: (item: T) => void;
+  onAdded?: (item: T, meta?: EventMeta) => void;
   onChanged?: (item: T, previousId?: string) => void;
   onRemoved?: (id: string) => void;
   onInvalidate?: (reason?: string) => void;
@@ -167,15 +173,31 @@ export interface TransportResponse<T = unknown> {
   headers: Headers;
 }
 
+export type ConflictResolutionStrategy = "server-wins" | "client-wins" | "manual";
+
+export interface ConflictError {
+  code: "CONFLICT";
+  serverState: unknown;
+  clientState: unknown;
+}
+
+export interface ResolvedMutation {
+  data: unknown;
+  retryWith?: "create" | "update";
+}
+
 export interface OfflineMutation {
   id: string;
+  idempotencyKey: string;
   type: "create" | "update" | "delete";
   resource: string;
   data?: unknown;
   objectId?: string;
+  optimisticId?: string;
+  serverId?: string;
   timestamp: number;
   retryCount: number;
-  status: "pending" | "processing" | "failed";
+  status: "pending" | "processing" | "failed" | "synced";
   error?: string;
 }
 
@@ -184,6 +206,14 @@ export interface OfflineConfig {
   maxRetries?: number;
   retryDelay?: number;
   storage?: OfflineStorage;
+  conflictResolution?: ConflictResolutionStrategy;
+  onConflict?: (
+    mutation: OfflineMutation,
+    serverState: unknown,
+    error: ConflictError
+  ) => ResolvedMutation | "retry" | "discard";
+  onIdRemapped?: (optimisticId: string, serverId: string) => void;
+  dedupeWindowMs?: number;
 }
 
 export interface OfflineStorage {
@@ -248,4 +278,15 @@ export interface ReactiveAggregate {
   readonly error: Error | null;
   refresh(): Promise<void>;
   setOptions(options: AggregateOptions): void;
+}
+
+export interface ConcaveClient {
+  readonly transport: unknown;
+  readonly offline?: unknown;
+  resource<T extends { id: string }>(path: string): ResourceClient<T>;
+  setAuthToken(token: string): void;
+  clearAuthToken(): void;
+  setAuthErrorHandler(handler: () => void): void;
+  getPendingCount(): Promise<number>;
+  checkAuth(url?: string): Promise<{ user: unknown | null }>;
 }

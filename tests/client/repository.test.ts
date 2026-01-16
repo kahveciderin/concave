@@ -466,82 +466,134 @@ describe("Repository with offline support", () => {
     });
   });
 
-  describe("create with offline", () => {
-    it("should create normally when online", async () => {
-      mockRequest.mockResolvedValue({ data: { id: "1", name: "Test" } });
+  describe("optimistic by default", () => {
+    it("should return optimistic result immediately for create by default", async () => {
+      // Request will hang forever - but optimistic should return immediately
+      mockRequest.mockImplementation(() => new Promise(() => {}));
 
-      const result = await repository.create({ name: "Test" }, { optimistic: true });
+      const result = await repository.create({ name: "Test" });
 
-      expect(mockRequest).toHaveBeenCalled();
-      expect(result.id).toBe("1");
-    });
-
-    it("should queue mutation when offline with optimistic flag", async () => {
-      (offlineManager as any).isOnline = false;
-
-      const result = await repository.create({ name: "Test" }, { optimistic: true });
-
-      expect(mockRequest).not.toHaveBeenCalled();
+      // Should return immediately with optimistic ID (default behavior)
       expect(result.id).toContain("optimistic_");
       expect(result.name).toBe("Test");
+    });
+
+    it("should return optimistic result immediately for update by default", async () => {
+      mockRequest.mockImplementation(() => new Promise(() => {}));
+
+      const result = await repository.update("123", { name: "Updated" });
+
+      expect(result.id).toBe("123");
+      expect(result.name).toBe("Updated");
+    });
+
+    it("should return immediately for delete by default", async () => {
+      mockRequest.mockImplementation(() => new Promise(() => {}));
+
+      // Should not hang
+      await repository.delete("123");
+    });
+
+    it("should use provided optimisticId for create", async () => {
+      mockRequest.mockImplementation(() => new Promise(() => {}));
+
+      const result = await repository.create(
+        { name: "Test" },
+        { optimisticId: "my-custom-id" }
+      );
+
+      expect(result.id).toBe("my-custom-id");
+    });
+
+    it("should register ID mapping on successful background sync", async () => {
+      mockRequest.mockResolvedValue({ data: { id: "server-123", name: "Test" } });
+
+      const result = await repository.create({ name: "Test" });
+
+      // Wait for background sync
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(offlineManager.resolveId(result.id)).toBe("server-123");
+    });
+
+    it("should queue mutation on background sync failure", async () => {
+      mockRequest.mockRejectedValue(new Error("Network error"));
+
+      const result = await repository.create({ name: "Test" });
+
+      // Wait for background sync to fail and queue
+      await new Promise((r) => setTimeout(r, 10));
 
       const pending = await offlineManager.getPendingMutations();
       expect(pending).toHaveLength(1);
       expect(pending[0].type).toBe("create");
+      expect(pending[0].optimisticId).toBe(result.id);
+    });
+  });
+
+  describe("opt-out of optimistic mode", () => {
+    it("should wait for server response on create with optimistic: false", async () => {
+      mockRequest.mockResolvedValue({ data: { id: "server-id", name: "Test" } });
+
+      const result = await repository.create({ name: "Test" }, { optimistic: false });
+
+      expect(mockRequest).toHaveBeenCalled();
+      expect(result.id).toBe("server-id");
     });
 
-    it("should not queue when offline without optimistic flag", async () => {
-      (offlineManager as any).isOnline = false;
+    it("should wait for server response on update with optimistic: false", async () => {
+      mockRequest.mockResolvedValue({ data: { id: "123", name: "Updated" } });
+
+      const result = await repository.update("123", { name: "Updated" }, { optimistic: false });
+
+      expect(mockRequest).toHaveBeenCalled();
+      expect(result.name).toBe("Updated");
+    });
+
+    it("should throw on network failure with optimistic: false", async () => {
       mockRequest.mockRejectedValue(new Error("Network error"));
 
-      await expect(repository.create({ name: "Test" })).rejects.toThrow();
+      await expect(repository.create({ name: "Test" }, { optimistic: false })).rejects.toThrow("Network error");
+      await expect(repository.update("123", { name: "Updated" }, { optimistic: false })).rejects.toThrow("Network error");
+      await expect(repository.delete("123", { optimistic: false })).rejects.toThrow("Network error");
     });
   });
 
-  describe("update with offline", () => {
-    it("should queue update when offline with optimistic flag", async () => {
-      (offlineManager as any).isOnline = false;
+  describe("ID resolution for updates/deletes", () => {
+    it("should resolve optimistic ID to server ID for update", async () => {
+      // First, set up an ID mapping
+      offlineManager.registerIdMapping("optimistic_123", "server_456");
 
-      const result = await repository.update("123", { name: "Updated" }, { optimistic: true });
+      mockRequest.mockResolvedValue({ data: { id: "server_456", name: "Updated" } });
 
-      expect(mockRequest).not.toHaveBeenCalled();
-      expect(result.id).toBe("123");
-      expect(result.name).toBe("Updated");
+      await repository.update("optimistic_123", { name: "Updated" }, { optimistic: true });
 
-      const pending = await offlineManager.getPendingMutations();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].type).toBe("update");
-      expect(pending[0].objectId).toBe("123");
+      // Wait for background sync
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Should have called with resolved ID
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: "/users/server_456",
+        })
+      );
     });
-  });
 
-  describe("replace with offline", () => {
-    it("should queue replace when offline with optimistic flag", async () => {
-      (offlineManager as any).isOnline = false;
+    it("should resolve optimistic ID to server ID for delete", async () => {
+      offlineManager.registerIdMapping("optimistic_123", "server_456");
 
-      const result = await repository.replace("123", { name: "Replaced" }, { optimistic: true });
+      mockRequest.mockResolvedValue({ data: undefined });
 
-      expect(mockRequest).not.toHaveBeenCalled();
-      expect(result.id).toBe("123");
+      await repository.delete("optimistic_123", { optimistic: true });
 
-      const pending = await offlineManager.getPendingMutations();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].type).toBe("update");
-    });
-  });
+      // Wait for background sync
+      await new Promise((r) => setTimeout(r, 10));
 
-  describe("delete with offline", () => {
-    it("should queue delete when offline with optimistic flag", async () => {
-      (offlineManager as any).isOnline = false;
-
-      await repository.delete("123", { optimistic: true });
-
-      expect(mockRequest).not.toHaveBeenCalled();
-
-      const pending = await offlineManager.getPendingMutations();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].type).toBe("delete");
-      expect(pending[0].objectId).toBe("123");
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: "/users/server_456",
+        })
+      );
     });
   });
 });

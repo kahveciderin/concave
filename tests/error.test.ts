@@ -119,12 +119,27 @@ describe("Error Classes", () => {
 
   describe("FilterParseError", () => {
     it("should create filter parse error", () => {
-      const error = new FilterParseError("Unexpected token", 10);
+      const error = new FilterParseError("Unexpected token", { position: 10 });
 
       expect(error.message).toBe("Invalid filter expression: Unexpected token");
       expect(error.statusCode).toBe(400);
       expect(error.code).toBe("FILTER_PARSE_ERROR");
       expect(error.details).toEqual({ position: 10 });
+    });
+
+    it("should include suggestions and allowed values", () => {
+      const error = new FilterParseError("Unknown operator", {
+        position: 5,
+        suggestion: "Did you mean '=='?",
+        allowedOperators: ["==", "!=", ">", "<"],
+      });
+
+      expect(error.statusCode).toBe(400);
+      expect(error.details).toMatchObject({
+        position: 5,
+        suggestion: "Did you mean '=='?",
+        allowedOperators: ["==", "!=", ">", "<"],
+      });
     });
   });
 

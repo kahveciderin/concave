@@ -46,7 +46,12 @@ export {
 } from "./resource/subscription";
 
 // Procedures
-export { defineProcedure, executeProcedure } from "./resource/procedures";
+export {
+  defineProcedure,
+  executeProcedure,
+  createTimestampHooks,
+  composeHooks,
+} from "./resource/procedures";
 
 // Query utilities
 export { parseSelect, applyProjection } from "./resource/query";
@@ -83,6 +88,7 @@ export {
   createUserContext,
 } from "./auth/adapter";
 export {
+  createAuthMiddleware,
   requireAuth,
   optionalAuth,
   requireRole,
@@ -114,7 +120,41 @@ export type {
 
 // Middleware
 export { createRateLimiter } from "./middleware/rateLimit";
-export { asyncHandler } from "./middleware/error";
+export { asyncHandler, errorMiddleware, notFoundHandler } from "./middleware/error";
+export {
+  observabilityMiddleware,
+  createMetricsCollector,
+} from "./middleware/observability";
+export type {
+  RequestMetrics,
+  SubscriptionMetrics,
+  ErrorMetrics,
+  MetricsConfig,
+  ObservabilityConfig,
+  MetricsCollector,
+} from "./middleware/observability";
+
+// Admin UI
+export { createAdminUI, registerResource } from "./ui";
+export type { AdminUIConfig, ResourceRegistry } from "./ui";
+
+// OpenAPI
+export {
+  generateOpenAPISpec,
+  serveOpenAPI,
+  createConcaveRouter,
+  extractSchemaInfo,
+  buildConcaveSchema,
+  generateTypeScriptTypes,
+} from "./openapi";
+export type {
+  OpenAPIConfig,
+  RegisteredResource,
+  ResourceSchemaInfo,
+  FieldSchemaInfo,
+  TypeInfo,
+  ConcaveSchema,
+} from "./openapi";
 
 // KV Store
 export {

@@ -2,8 +2,25 @@ import {
   OfflineMutation,
   OfflineConfig,
   OfflineStorage,
+  ConflictError,
+  ResolvedMutation,
 } from "./types";
 import { v4 as uuidv4 } from "uuid";
+
+export const generateIdempotencyKey = (
+  type: string,
+  resource: string,
+  objectId?: string
+): string => {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  const parts = [type, resource];
+  if (objectId) {
+    parts.push(objectId);
+  }
+  parts.push(timestamp, random);
+  return parts.join("-");
+};
 
 export class InMemoryOfflineStorage implements OfflineStorage {
   private mutations: OfflineMutation[] = [];
@@ -19,7 +36,7 @@ export class InMemoryOfflineStorage implements OfflineStorage {
   async updateMutation(id: string, update: Partial<OfflineMutation>): Promise<void> {
     const index = this.mutations.findIndex((m) => m.id === id);
     if (index !== -1) {
-      this.mutations[index] = { ...this.mutations[index], ...update };
+      this.mutations[index] = { ...this.mutations[index]!, ...update };
     }
   }
 
@@ -74,21 +91,51 @@ export class LocalStorageOfflineStorage implements OfflineStorage {
   }
 }
 
+export interface SyncResult {
+  success: boolean;
+  serverId?: string;
+  error?: Error;
+}
+
 export interface OfflineManagerConfig {
   config: OfflineConfig;
-  onMutationSync?: (mutation: OfflineMutation) => Promise<void>;
+  onMutationSync?: (mutation: OfflineMutation) => Promise<SyncResult>;
   onMutationFailed?: (mutation: OfflineMutation, error: Error) => void;
   onSyncComplete?: () => void;
+  onIdRemapped?: (optimisticId: string, serverId: string) => void;
 }
+
+const isDuplicateMutation = (
+  mutation: OfflineMutation,
+  pending: OfflineMutation[],
+  dedupeWindowMs: number = 5000
+): boolean => {
+  return pending.some(
+    (p) =>
+      p.id !== mutation.id &&
+      (p.idempotencyKey === mutation.idempotencyKey ||
+        (p.type === mutation.type &&
+          p.resource === mutation.resource &&
+          p.objectId === mutation.objectId &&
+          p.timestamp > Date.now() - dedupeWindowMs))
+  );
+};
+
+const isConflictError = (error: unknown): error is ConflictError => {
+  if (typeof error !== "object" || error === null) return false;
+  return (error as ConflictError).code === "CONFLICT";
+};
 
 export class OfflineManager {
   private storage: OfflineStorage;
   private config: OfflineConfig;
   private syncInProgress = false;
   private isOnline = true;
-  private onMutationSync?: (mutation: OfflineMutation) => Promise<void>;
+  private onMutationSync?: (mutation: OfflineMutation) => Promise<SyncResult>;
   private onMutationFailed?: (mutation: OfflineMutation, error: Error) => void;
   private onSyncComplete?: () => void;
+  private onIdRemapped?: (optimisticId: string, serverId: string) => void;
+  private idMappings: Map<string, string> = new Map();
 
   constructor(managerConfig: OfflineManagerConfig) {
     this.config = managerConfig.config;
@@ -96,6 +143,7 @@ export class OfflineManager {
     this.onMutationSync = managerConfig.onMutationSync;
     this.onMutationFailed = managerConfig.onMutationFailed;
     this.onSyncComplete = managerConfig.onSyncComplete;
+    this.onIdRemapped = managerConfig.onIdRemapped ?? this.config.onIdRemapped;
 
     if (typeof window !== "undefined") {
       window.addEventListener("online", () => this.handleOnline());
@@ -117,18 +165,29 @@ export class OfflineManager {
     type: "create" | "update" | "delete",
     resource: string,
     data?: unknown,
-    objectId?: string
+    objectId?: string,
+    optimisticId?: string
   ): Promise<string> {
     const mutation: OfflineMutation = {
       id: uuidv4(),
+      idempotencyKey: generateIdempotencyKey(type, resource, objectId),
       type,
       resource,
       data,
       objectId,
+      optimisticId: type === "create" ? (optimisticId ?? uuidv4()) : undefined,
       timestamp: Date.now(),
       retryCount: 0,
       status: "pending",
     };
+
+    const pending = await this.storage.getMutations();
+    const dedupeWindowMs = this.config.dedupeWindowMs ?? 5000;
+
+    if (isDuplicateMutation(mutation, pending, dedupeWindowMs)) {
+      console.warn("Duplicate mutation detected, skipping:", mutation.id);
+      return mutation.id;
+    }
 
     await this.storage.addMutation(mutation);
 
@@ -137,6 +196,28 @@ export class OfflineManager {
     }
 
     return mutation.id;
+  }
+
+  private async handleConflict(
+    mutation: OfflineMutation,
+    error: ConflictError
+  ): Promise<ResolvedMutation | "retry" | "discard"> {
+    const strategy = this.config.conflictResolution ?? "server-wins";
+
+    if (this.config.onConflict) {
+      return this.config.onConflict(mutation, error.serverState, error);
+    }
+
+    switch (strategy) {
+      case "server-wins":
+        return "discard";
+      case "client-wins":
+        return { data: mutation.data, retryWith: mutation.type as "create" | "update" };
+      case "manual":
+        return "discard";
+      default:
+        return "discard";
+    }
   }
 
   async syncPendingMutations(): Promise<void> {
@@ -160,9 +241,62 @@ export class OfflineManager {
         await this.storage.updateMutation(mutation.id, { status: "processing" });
 
         try {
-          await this.onMutationSync(mutation);
-          await this.storage.removeMutation(mutation.id);
+          const result = await this.onMutationSync(mutation);
+
+          if (result.success) {
+            if (
+              mutation.type === "create" &&
+              mutation.optimisticId &&
+              result.serverId &&
+              mutation.optimisticId !== result.serverId
+            ) {
+              this.idMappings.set(mutation.optimisticId, result.serverId);
+              this.onIdRemapped?.(mutation.optimisticId, result.serverId);
+
+              await this.storage.updateMutation(mutation.id, {
+                serverId: result.serverId,
+                status: "synced",
+              });
+            }
+
+            await this.storage.removeMutation(mutation.id);
+          } else if (result.error) {
+            throw result.error;
+          }
         } catch (error) {
+          if (isConflictError(error)) {
+            const resolution = await this.handleConflict(mutation, error);
+
+            if (resolution === "discard") {
+              await this.storage.removeMutation(mutation.id);
+              continue;
+            }
+
+            if (resolution === "retry") {
+              await this.storage.updateMutation(mutation.id, {
+                status: "pending",
+                retryCount: mutation.retryCount + 1,
+              });
+              continue;
+            }
+
+            const resolvedMutation: OfflineMutation = {
+              ...mutation,
+              data: resolution.data,
+              type: resolution.retryWith ?? mutation.type,
+              idempotencyKey: generateIdempotencyKey(
+                resolution.retryWith ?? mutation.type,
+                mutation.resource,
+                mutation.objectId
+              ),
+              retryCount: mutation.retryCount + 1,
+              status: "pending",
+            };
+
+            await this.storage.updateMutation(mutation.id, resolvedMutation);
+            continue;
+          }
+
           await this.storage.updateMutation(mutation.id, {
             status: "failed",
             retryCount: mutation.retryCount + 1,
@@ -186,10 +320,30 @@ export class OfflineManager {
 
   async clearMutations(): Promise<void> {
     await this.storage.clear();
+    this.idMappings.clear();
   }
 
   getIsOnline(): boolean {
     return this.isOnline;
+  }
+
+  getServerIdForOptimisticId(optimisticId: string): string | undefined {
+    return this.idMappings.get(optimisticId);
+  }
+
+  resolveId(id: string): string {
+    return this.idMappings.get(id) ?? id;
+  }
+
+  registerIdMapping(optimisticId: string, serverId: string): void {
+    if (optimisticId !== serverId) {
+      this.idMappings.set(optimisticId, serverId);
+      this.onIdRemapped?.(optimisticId, serverId);
+    }
+  }
+
+  getIdMappings(): Map<string, string> {
+    return new Map(this.idMappings);
   }
 }
 

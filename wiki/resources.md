@@ -107,6 +107,41 @@ Authentication and authorization scopes:
 }
 ```
 
+### `capabilities`
+
+Enable or disable specific operations:
+
+```typescript
+{
+  capabilities: {
+    enableCreate: true,      // Allow POST /
+    enableUpdate: true,      // Allow PATCH /:id
+    enableReplace: true,     // Allow PUT /:id
+    enableDelete: true,      // Allow DELETE /:id
+    enableBatchCreate: true, // Allow POST /batch
+    enableBatchUpdate: true, // Allow PATCH /batch
+    enableBatchDelete: true, // Allow DELETE /batch
+    enableAggregations: true,// Allow GET /aggregate
+    enableSubscriptions: true,// Allow GET /subscribe
+  },
+}
+```
+
+### `fields`
+
+Field-level policies for read/write/filter/sort access:
+
+```typescript
+{
+  fields: {
+    readable: ["id", "name", "email", "createdAt"],  // Fields returned in responses
+    writable: ["name", "email"],                      // Fields allowed in create/update
+    filterable: ["name", "email", "createdAt"],       // Fields allowed in filters
+    sortable: ["name", "createdAt"],                  // Fields allowed in orderBy
+  },
+}
+```
+
 ### `customOperators`
 
 Custom filter operators:

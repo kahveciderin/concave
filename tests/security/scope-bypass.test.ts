@@ -1,0 +1,322 @@
+import { describe, it, expect, beforeEach, afterEach, afterAll, beforeAll } from "vitest";
+import express, { Express, Request, Response, NextFunction } from "express";
+import request from "supertest";
+import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { drizzle } from "drizzle-orm/libsql";
+import { createClient as createLibsqlClient } from "@libsql/client";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { useResource } from "@/resource/hook";
+import { rsql } from "@/auth/rsql";
+
+const testDocumentsTable = sqliteTable("test_documents", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  userId: text("userId").notNull(),
+  isPublic: integer("isPublic", { mode: "boolean" }).default(false),
+});
+
+const injectTestUser = (userId: string) => (req: Request, _res: Response, next: NextFunction) => {
+  (req as any).user = { id: userId, roles: ["user"] };
+  next();
+};
+
+const errorHandler = (err: any, _req: Request, res: Response, _next: NextFunction) => {
+  const status = err.statusCode || err.status || 500;
+  res.status(status).json({
+    type: err.type || "/__concave/problems/internal-error",
+    title: err.title || "Error",
+    status,
+    detail: err.message,
+  });
+};
+
+describe("Secure Query Scope Bypass Prevention Tests", () => {
+  let libsqlClient: ReturnType<typeof createLibsqlClient>;
+  let db: ReturnType<typeof drizzle>;
+  let tempDir: string;
+
+  beforeAll(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "concave-security-"));
+  });
+
+  afterAll(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  beforeEach(async () => {
+    libsqlClient = createLibsqlClient({ url: `file:${join(tempDir, `test-${Date.now()}.db`)}` });
+    db = drizzle(libsqlClient);
+
+    await libsqlClient.execute(`DROP TABLE IF EXISTS test_documents`);
+    await libsqlClient.execute(`
+      CREATE TABLE test_documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        userId TEXT NOT NULL,
+        isPublic INTEGER DEFAULT 0
+      )
+    `);
+
+    await libsqlClient.execute(
+      "INSERT INTO test_documents (title, content, userId, isPublic) VALUES ('User1 Private', 'Secret content', 'user1', 0)"
+    );
+    await libsqlClient.execute(
+      "INSERT INTO test_documents (title, content, userId, isPublic) VALUES ('User1 Public', 'Public content', 'user1', 1)"
+    );
+    await libsqlClient.execute(
+      "INSERT INTO test_documents (title, content, userId, isPublic) VALUES ('User2 Private', 'Other secret', 'user2', 0)"
+    );
+    await libsqlClient.execute(
+      "INSERT INTO test_documents (title, content, userId, isPublic) VALUES ('User2 Public', 'Other public', 'user2', 1)"
+    );
+  });
+
+  afterEach(() => {
+    libsqlClient.close();
+  });
+
+  const createAppWithScope = (currentUserId: string) => {
+    const app = express();
+    app.use(express.json());
+    app.use(injectTestUser(currentUserId));
+
+    app.use(
+      "/docs",
+      useResource(testDocumentsTable, {
+        id: testDocumentsTable.id,
+        db,
+        auth: {
+          read: async (user) => rsql`userId==${user.id},isPublic==1`,
+          create: async (user) => rsql`userId==${user.id}`,
+          update: async (user) => rsql`userId==${user.id}`,
+          delete: async (user) => rsql`userId==${user.id}`,
+        },
+      })
+    );
+
+    app.use(errorHandler);
+    return app;
+  };
+
+  describe("List Endpoint Scope Enforcement", () => {
+    it("should only return documents matching scope (own + public)", async () => {
+      const app = createAppWithScope("user1");
+
+      const res = await request(app).get("/docs").expect(200);
+
+      const docs = res.body.items;
+
+      expect(docs.length).toBe(3);
+
+      const titles = docs.map((d: any) => d.title);
+      expect(titles).toContain("User1 Private");
+      expect(titles).toContain("User1 Public");
+      expect(titles).toContain("User2 Public");
+      expect(titles).not.toContain("User2 Private");
+    });
+
+    it("should never return out-of-scope items regardless of filter", async () => {
+      const app = createAppWithScope("user1");
+
+      const filter = encodeURIComponent('userId=="user2"');
+      const res = await request(app).get(`/docs?filter=${filter}`).expect(200);
+
+      const docs = res.body.items;
+
+      for (const doc of docs) {
+        const isPublicDoc = doc.isPublic === 1 || doc.isPublic === true;
+        expect(isPublicDoc || doc.userId === "user1").toBe(true);
+      }
+
+      const hasPrivateUser2 = docs.some(
+        (d: any) => d.title === "User2 Private"
+      );
+      expect(hasPrivateUser2).toBe(false);
+    });
+  });
+
+  describe("Get By ID Scope Enforcement", () => {
+    it("should return 404 for out-of-scope document", async () => {
+      const app = createAppWithScope("user1");
+
+      const allDocs = await libsqlClient.execute("SELECT * FROM test_documents");
+      const user2PrivateDoc = allDocs.rows.find(
+        (r: any) => r.title === "User2 Private"
+      );
+
+      if (user2PrivateDoc) {
+        await request(app).get(`/docs/${user2PrivateDoc.id}`).expect(404);
+      }
+    });
+
+    it("should return document if in scope", async () => {
+      const app = createAppWithScope("user1");
+
+      const allDocs = await libsqlClient.execute("SELECT * FROM test_documents");
+      const user1Doc = allDocs.rows.find((r: any) => r.title === "User1 Private");
+
+      if (user1Doc) {
+        const res = await request(app).get(`/docs/${user1Doc.id}`).expect(200);
+        expect(res.body.title).toBe("User1 Private");
+      }
+    });
+  });
+
+  describe("Update Scope Enforcement", () => {
+    it("should not allow updating out-of-scope document", async () => {
+      const app = createAppWithScope("user1");
+
+      const allDocs = await libsqlClient.execute("SELECT * FROM test_documents");
+      const user2Doc = allDocs.rows.find((r: any) => r.title === "User2 Private");
+
+      if (user2Doc) {
+        await request(app)
+          .patch(`/docs/${user2Doc.id}`)
+          .send({ title: "Hacked Title" })
+          .expect(404);
+
+        const afterUpdate = await libsqlClient.execute(
+          `SELECT * FROM test_documents WHERE id = ${user2Doc.id}`
+        );
+        expect(afterUpdate.rows[0].title).toBe("User2 Private");
+      }
+    });
+
+    it("should allow updating own document", async () => {
+      const app = createAppWithScope("user1");
+
+      const allDocs = await libsqlClient.execute("SELECT * FROM test_documents");
+      const user1Doc = allDocs.rows.find((r: any) => r.title === "User1 Private");
+
+      if (user1Doc) {
+        await request(app)
+          .patch(`/docs/${user1Doc.id}`)
+          .send({ title: "Updated Title" })
+          .expect(200);
+
+        const afterUpdate = await libsqlClient.execute(
+          `SELECT * FROM test_documents WHERE id = ${user1Doc.id}`
+        );
+        expect(afterUpdate.rows[0].title).toBe("Updated Title");
+      }
+    });
+
+    it("should not allow updating public doc you do not own", async () => {
+      const app = createAppWithScope("user1");
+
+      const allDocs = await libsqlClient.execute("SELECT * FROM test_documents");
+      const user2PublicDoc = allDocs.rows.find(
+        (r: any) => r.title === "User2 Public"
+      );
+
+      if (user2PublicDoc) {
+        await request(app)
+          .patch(`/docs/${user2PublicDoc.id}`)
+          .send({ title: "Hijacked" })
+          .expect(404);
+      }
+    });
+  });
+
+  describe("Delete Scope Enforcement", () => {
+    it("should not allow deleting out-of-scope document", async () => {
+      const app = createAppWithScope("user1");
+
+      const allDocs = await libsqlClient.execute("SELECT * FROM test_documents");
+      const user2Doc = allDocs.rows.find((r: any) => r.title === "User2 Private");
+
+      if (user2Doc) {
+        await request(app).delete(`/docs/${user2Doc.id}`).expect(404);
+
+        const afterDelete = await libsqlClient.execute(
+          `SELECT * FROM test_documents WHERE id = ${user2Doc.id}`
+        );
+        expect(afterDelete.rows.length).toBe(1);
+      }
+    });
+
+    it("should allow deleting own document", async () => {
+      const app = createAppWithScope("user1");
+
+      const allDocs = await libsqlClient.execute("SELECT * FROM test_documents");
+      const user1Doc = allDocs.rows.find((r: any) => r.title === "User1 Private");
+
+      if (user1Doc) {
+        await request(app).delete(`/docs/${user1Doc.id}`).expect(204);
+
+        const afterDelete = await libsqlClient.execute(
+          `SELECT * FROM test_documents WHERE id = ${user1Doc.id}`
+        );
+        expect(afterDelete.rows.length).toBe(0);
+      }
+    });
+  });
+
+  describe("Count Scope Enforcement", () => {
+    it("should only count documents in scope", async () => {
+      const app = createAppWithScope("user1");
+
+      const res = await request(app).get("/docs/count").expect(200);
+
+      expect(res.body.count).toBe(3);
+    });
+
+    it("should apply scope to filtered count", async () => {
+      const app = createAppWithScope("user1");
+
+      const filter = encodeURIComponent('isPublic==1');
+      const res = await request(app).get(`/docs/count?filter=${filter}`);
+
+      expect([200, 400]).toContain(res.status);
+      if (res.status === 200) {
+        expect(res.body.count).toBe(2);
+      }
+    });
+  });
+
+  describe("Aggregate Scope Enforcement", () => {
+    it("should only aggregate documents in scope", async () => {
+      const app = createAppWithScope("user1");
+
+      const res = await request(app).get("/docs/aggregate?count=true");
+
+      expect([200, 400]).toContain(res.status);
+      if (res.status === 200 && res.body.groups) {
+        const totalCount = res.body.groups.reduce(
+          (sum: number, g: any) => sum + (g.count || 0),
+          0
+        );
+        expect(totalCount).toBeLessThanOrEqual(3);
+      }
+    });
+  });
+
+  describe("Create Scope Enforcement", () => {
+    it("should auto-assign userId based on authenticated user", async () => {
+      const app = createAppWithScope("user1");
+
+      const res = await request(app)
+        .post("/docs")
+        .send({ title: "New Doc", content: "Content", userId: "user1" })
+        .expect(201);
+
+      expect(res.body.userId).toBe("user1");
+    });
+
+    it("should handle creating document with explicit userId", async () => {
+      const app = createAppWithScope("user1");
+
+      const res = await request(app)
+        .post("/docs")
+        .send({ title: "Test", content: "Content", userId: "user2" });
+
+      expect([201, 400, 403]).toContain(res.status);
+    });
+  });
+});

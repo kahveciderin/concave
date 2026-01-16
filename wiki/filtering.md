@@ -7,13 +7,14 @@ Concave uses an RSQL-like syntax for filtering resources.
 ```
 field==value        # Equals
 field!=value        # Not equals
-field=gt=value      # Greater than
-field=ge=value      # Greater than or equal
-field=lt=value      # Less than
-field=le=value      # Less than or equal
+field>value         # Greater than
+field>=value        # Greater than or equal
+field<value         # Less than
+field<=value        # Less than or equal
 field=in=(a,b,c)    # In list
 field=out=(a,b,c)   # Not in list
-field=like=pattern  # LIKE pattern
+field%=pattern      # LIKE pattern
+field!%=pattern     # NOT LIKE pattern
 field=isnull=true   # Is null
 ```
 
@@ -21,13 +22,13 @@ field=isnull=true   # Is null
 
 ```
 # AND (semicolon)
-status=="active";age=gt=18
+status=="active";age>18
 
 # OR (comma)
 role=="admin",role=="moderator"
 
 # Grouping (parentheses)
-(status=="active";age=gt=18),(role=="admin")
+(status=="active";age>18),(role=="admin")
 ```
 
 ## Examples
@@ -37,13 +38,13 @@ role=="admin",role=="moderator"
 GET /users?filter=status=="active"
 
 # Get users older than 18
-GET /users?filter=age=gt=18
+GET /users?filter=age>18
 
 # Get users with specific roles
 GET /users?filter=role=in=("admin","moderator")
 
 # Complex filter
-GET /users?filter=(status=="active";age=gt=18),(role=="admin")
+GET /users?filter=(status=="active";age>18),(role=="admin")
 ```
 
 ## Custom Operators
@@ -104,7 +105,7 @@ deletedAt=isnull=true
 tags=in=("tech","news")
 
 # Dates (ISO format in quotes)
-createdAt=gt="2024-01-01T00:00:00Z"
+createdAt>"2024-01-01T00:00:00Z"
 ```
 
 ## Escaping

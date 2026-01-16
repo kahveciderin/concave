@@ -241,6 +241,42 @@ class ChangelogManager {
       return this.localEntries.length;
     }
   }
+
+  async getRecentEntries(limit: number): Promise<ChangelogEntry[]> {
+    const kv = getKV();
+
+    if (kv) {
+      // Get all entries and take the most recent ones
+      const count = await kv.zcard(CHANGELOG_ENTRIES_KEY);
+      const start = Math.max(0, count - limit);
+      const entries = await kv.zrange(CHANGELOG_ENTRIES_KEY, start, count - 1);
+      return entries
+        .map((data: string) => JSON.parse(data) as ChangelogEntry)
+        .reverse();
+    } else {
+      // Return the last 'limit' entries
+      return this.localEntries.slice(-limit).reverse();
+    }
+  }
+
+  async getEntriesInRange(fromSeq: number, limit: number): Promise<ChangelogEntry[]> {
+    const kv = getKV();
+
+    if (kv) {
+      const entries = await kv.zrangebyscore(
+        CHANGELOG_ENTRIES_KEY,
+        fromSeq,
+        "+inf"
+      );
+      return entries
+        .slice(0, limit)
+        .map((data) => JSON.parse(data) as ChangelogEntry);
+    } else {
+      return this.localEntries
+        .filter((entry) => entry.seq >= fromSeq)
+        .slice(0, limit);
+    }
+  }
 }
 
 export const changelog = new ChangelogManager();

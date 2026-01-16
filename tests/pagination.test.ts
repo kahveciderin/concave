@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   encodeCursor,
   decodeCursor,
+  decodeCursorLegacy,
   parseOrderBy,
   extractCursorValues,
   processPaginatedResults,
@@ -13,9 +14,11 @@ describe("Pagination", () => {
     it("should encode and decode cursor data correctly", () => {
       const data = { v: "test-value", id: "123" };
       const encoded = encodeCursor(data);
-      const decoded = decodeCursor(encoded);
+      const decoded = decodeCursorLegacy(encoded);
 
-      expect(decoded).toEqual(data);
+      expect(decoded).not.toBeNull();
+      expect(decoded?.v).toEqual(data.v);
+      expect(decoded?.id).toEqual(data.id);
     });
 
     it("should handle complex cursor values", () => {
@@ -24,21 +27,35 @@ describe("Pagination", () => {
         id: "abc-123",
       };
       const encoded = encodeCursor(data);
-      const decoded = decodeCursor(encoded);
+      const decoded = decodeCursorLegacy(encoded);
 
-      expect(decoded).toEqual(data);
+      expect(decoded).not.toBeNull();
+      expect(decoded?.v).toEqual(data.v);
+      expect(decoded?.id).toEqual(data.id);
     });
 
     it("should return null for invalid cursor", () => {
-      expect(decodeCursor("invalid-base64")).toBeNull();
-      expect(decodeCursor("")).toBeNull();
+      expect(decodeCursorLegacy("invalid-base64")).toBeNull();
+      expect(decodeCursorLegacy("")).toBeNull();
     });
 
     it("should return null for cursor without required fields", () => {
       const invalidData = Buffer.from(JSON.stringify({ foo: "bar" })).toString(
         "base64url"
       );
-      expect(decodeCursor(invalidData)).toBeNull();
+      expect(decodeCursorLegacy(invalidData)).toBeNull();
+    });
+
+    it("should return structured result with new decodeCursor", () => {
+      const data = { v: "test-value", id: "123" };
+      const encoded = encodeCursor(data);
+      const result = decodeCursor(encoded);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.v).toEqual(data.v);
+        expect(result.data.id).toEqual(data.id);
+      }
     });
   });
 
