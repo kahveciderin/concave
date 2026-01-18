@@ -31,6 +31,11 @@ A production-ready real-time API framework for Express.js and Drizzle ORM. Defin
 - **Offline Support** - Optimistic updates, mutation queue, auto-sync
 - **OIDC Integration** - PKCE flow, token refresh, 401 retry
 
+## Environment Variables
+- **Type-safe configuration** - Define and validate env vars with Zod
+- **Public and private vars** - Separate client and server configs
+- **Client library support** - Typed access to public env vars from the client
+
 ### Developer Experience
 - **Admin UI** - Built-in dashboard at `/__concave/ui`
 - **OpenAPI Generation** - Auto-generated specs from resources
