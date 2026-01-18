@@ -7,7 +7,7 @@ Concave provides several middleware components for observability, versioning, an
 Track request metrics and performance:
 
 ```typescript
-import { createObservabilityMiddleware, createMetricsCollector } from "concave/middleware/observability";
+import { createObservabilityMiddleware, createMetricsCollector } from "@kahveciderin/concave/middleware/observability";
 
 const metrics = createMetricsCollector({
   maxMetrics: 1000,
@@ -42,7 +42,7 @@ const byPath = metrics.getByPath("/api/users");
 API version management with client compatibility:
 
 ```typescript
-import { createVersionMiddleware, wrapWithVersion, checkMinimumVersion, CONCAVE_VERSION } from "concave/middleware/versioning";
+import { createVersionMiddleware, wrapWithVersion, checkMinimumVersion, CONCAVE_VERSION } from "@kahveciderin/concave/middleware/versioning";
 
 // Add version headers to responses
 app.use(createVersionMiddleware({
@@ -63,7 +63,7 @@ const result = checkMinimumVersion("0.9.0", "1.0.0");
 Prevent duplicate requests with idempotency keys:
 
 ```typescript
-import { createIdempotencyMiddleware } from "concave/middleware/idempotency";
+import { createIdempotencyMiddleware } from "@kahveciderin/concave/middleware/idempotency";
 
 app.use(createIdempotencyMiddleware({
   headerName: "Idempotency-Key",
@@ -82,7 +82,7 @@ When a request includes an `Idempotency-Key` header, the middleware:
 Optimistic concurrency control with ETags:
 
 ```typescript
-import { generateETag, parseIfMatch, checkETagMatch } from "concave/resource/etag";
+import { generateETag, parseIfMatch, checkETagMatch } from "@kahveciderin/concave/resource/etag";
 
 // Generate ETag from resource
 const etag = generateETag({ id: 1, name: "Test", updatedAt: "2024-01-01" });
@@ -115,7 +115,7 @@ Content-Type: application/json
 Per-resource rate limiting:
 
 ```typescript
-import { createRateLimitMiddleware } from "concave/middleware/rateLimit";
+import { createRateLimitMiddleware } from "@kahveciderin/concave/middleware/rateLimit";
 
 app.use(createRateLimitMiddleware({
   windowMs: 60000,    // 1 minute window

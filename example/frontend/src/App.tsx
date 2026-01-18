@@ -1,8 +1,12 @@
 import { getOrCreateClient } from 'concave/client';
-import { useAuth, useLiveList } from 'concave/client/react';
+import { useAuth, useLiveList, usePublicEnv } from 'concave/client/react';
 import { AuthForm } from './components/AuthForm';
 import type { Todo, User, Category, Tag } from './generated/api-types';
 import { useState, useEffect } from 'react';
+
+interface PublicEnv {
+  PUBLIC_VERSION: string;
+}
 
 // Extended Todo type with included relations
 interface TodoWithRelations extends Todo {
@@ -19,6 +23,7 @@ const client = getOrCreateClient({
 
 export function App() {
   const { user, isLoading, isAuthenticated, logout } = useAuth<User>();
+  const { env } = usePublicEnv<PublicEnv>();
 
   // Set auth error handler (redirects to login on 401)
   useEffect(() => {
@@ -32,19 +37,22 @@ export function App() {
           <div className="content" style={{ textAlign: 'center', padding: 40 }}>
             Loading...
           </div>
+          {env?.PUBLIC_VERSION && (
+            <div className="version-badge">v{env.PUBLIC_VERSION}</div>
+          )}
         </div>
       </div>
     );
   }
 
   if (!isAuthenticated || !user) {
-    return <AuthForm onLogin={() => window.location.reload()} />;
+    return <AuthForm onLogin={() => window.location.reload()} version={env?.PUBLIC_VERSION} />;
   }
 
-  return <TodoApp user={user} onLogout={logout} />;
+  return <TodoApp user={user} onLogout={logout} version={env?.PUBLIC_VERSION} />;
 }
 
-function TodoApp({ user, onLogout }: { user: User; onLogout: () => void }) {
+function TodoApp({ user, onLogout, version }: { user: User; onLogout: () => void; version?: string }) {
   const [newTodo, setNewTodo] = useState('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [showCategoryForm, setShowCategoryForm] = useState(false);
@@ -269,6 +277,7 @@ function TodoApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <div className="connection-status">
           <span className={`status-dot ${status === 'live' ? 'connected' : status === 'reconnecting' ? 'reconnecting' : 'disconnected'}`} />
           {statusLabel}
+          {version && <span className="version-text">v{version}</span>}
         </div>
       </div>
     </div>

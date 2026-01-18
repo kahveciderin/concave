@@ -11,6 +11,7 @@ export type {
   FieldSchemaInfo,
   TypeInfo,
   ConcaveSchema,
+  ConcaveRouterConfig,
 } from "./schema";
 
 export {

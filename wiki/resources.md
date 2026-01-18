@@ -5,7 +5,7 @@ Resources are the core of Concave. Each resource maps to a database table and au
 ## Basic Usage
 
 ```typescript
-import { useResource } from "concave/resource";
+import { useResource } from "@kahveciderin/concave/resource";
 import { postsTable } from "./db/schema";
 import { db } from "./db/db";
 

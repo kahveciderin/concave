@@ -1,13 +1,14 @@
 # Admin UI
 
-Concave includes a comprehensive admin dashboard for development and debugging at `/__concave/ui`. It provides a one-stop shop for monitoring, testing, and debugging your API.
+Concave includes a comprehensive admin dashboard for development and debugging at `/__concave/ui`. It provides a one-stop shop for monitoring, testing, and debugging your API with environment-aware features.
 
 ## Setup
 
 ```typescript
 import express from "express";
-import { createAdminUI, registerResource } from "concave/ui";
-import { createMetricsCollector, observabilityMiddleware } from "concave/middleware/observability";
+import { createAdminUI, registerResource } from "@kahveciderin/concave/ui";
+import { createHealthEndpoints } from "@kahveciderin/concave/health";
+import { createMetricsCollector, observabilityMiddleware } from "@kahveciderin/concave/middleware/observability";
 
 const app = express();
 
@@ -20,16 +21,46 @@ const metricsCollector = createMetricsCollector({
 // Add observability middleware to track requests
 app.use(observabilityMiddleware({ metrics: metricsCollector }));
 
+// Mount health endpoints (no auth required for k8s probes)
+app.use(createHealthEndpoints({
+  version: "1.0.0",
+  checks: { kv: myKVStore },
+  thresholds: { eventLoopLagMs: 100, memoryPercent: 90 },
+}));
+
 // Mount admin UI at /__concave
 app.use("/__concave", createAdminUI({
   title: "My API Admin",
   metricsCollector,
-  // Optional: changelog for replay debugging
+  // Security configuration for production
+  security: {
+    mode: process.env.NODE_ENV as "development" | "staging" | "production",
+    auth: { apiKey: process.env.ADMIN_API_KEY },
+  },
+  // Data explorer configuration
+  dataExplorer: {
+    enabled: true,
+    readOnly: process.env.NODE_ENV === "production",
+    excludeFields: { users: ["password", "apiKey"] },
+  },
+  // Task queue monitoring
+  taskMonitor: {
+    enabled: true,
+    scheduler: getTaskScheduler(),
+    workers: myWorkers,
+  },
+  // KV store inspection
+  kvInspector: {
+    enabled: process.env.NODE_ENV !== "production",
+    kv: myKVStore,
+    readOnly: process.env.NODE_ENV === "staging",
+  },
+  // Changelog for replay debugging
   changelog: {
     getCurrentSequence: () => changelog.getCurrentSequence(),
     getEntries: (from, limit) => changelog.getEntries(from, limit),
   },
-  // Optional: subscription monitoring
+  // Subscription monitoring
   getActiveSubscriptions: () => subscriptionManager.getActive(),
 }));
 
@@ -43,9 +74,159 @@ registerResource({
 });
 ```
 
+## Health Endpoints
+
+Kubernetes-compatible health probes for liveness and readiness checks:
+
+```typescript
+import { createHealthEndpoints } from "@kahveciderin/concave/health";
+
+app.use(createHealthEndpoints({
+  enabled: true,           // Default: true
+  basePath: "",            // Default: "" (root level)
+  version: "1.0.0",        // Optional version in response
+  checks: {
+    kv: myKVStore,         // KV store connection check
+    custom: async () => ({ // Custom health check
+      healthy: true,
+      name: "database",
+      message: "Connected",
+    }),
+  },
+  thresholds: {
+    eventLoopLagMs: 100,   // Default: 100ms
+    memoryPercent: 90,     // Default: 90%
+  },
+}));
+```
+
+### `/healthz` (Liveness)
+
+Returns 200 if the process is responsive. Used by Kubernetes for container restarts.
+
+```bash
+curl localhost:3000/healthz
+```
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "uptime": 3600,
+  "version": "1.0.0",
+  "checks": [
+    { "name": "event_loop", "healthy": true, "latencyMs": 2 },
+    { "name": "memory", "healthy": true, "usagePercent": 45 }
+  ]
+}
+```
+
+**Checks performed:**
+- Event loop lag (< threshold)
+- Memory usage (< threshold)
+
+### `/readyz` (Readiness)
+
+Returns 200 only if all dependencies are healthy. Used by Kubernetes for traffic routing.
+
+```bash
+curl localhost:3000/readyz
+```
+
+**Checks performed:**
+- KV connection (if configured)
+- Custom checks (if configured)
+
+Returns 503 with failed check details if unhealthy.
+
+## Environment-Aware Behavior
+
+The admin UI adapts based on the environment mode:
+
+| Feature | Development | Staging | Production |
+|---------|-------------|---------|------------|
+| Auth required | No (warning shown) | Yes | Yes |
+| Data editor | Enabled | Enabled (audit logged) | Disabled by default |
+| IP allowlist | Ignored | Optional | Enforced if set |
+| Debug info | Full | Partial | Minimal |
+| KV inspector | Enabled | Read-only | Disabled |
+
+### Environment Badge
+
+A visual indicator in the header shows the current environment:
+- **DEV** - Green badge
+- **STAGING** - Yellow/Orange badge
+- **PROD** - Blue badge (default theme)
+
+Warning banners appear for insecure configurations (e.g., auth disabled in production).
+
+## Admin Authentication
+
+Configure authentication for the admin panel:
+
+```typescript
+createAdminUI({
+  security: {
+    // Auto-detect from NODE_ENV or set explicitly
+    mode: "production",
+
+    auth: {
+      // Option 1: API key authentication
+      apiKey: "your-secret-key",
+
+      // Option 2: Disable auth (development only)
+      disabled: true,
+
+      // Option 3: Custom authentication
+      authenticate: async (req) => {
+        const session = await validateSession(req.cookies.session);
+        if (!session) return null;
+        return {
+          id: session.userId,
+          email: session.email,
+          roles: session.roles,
+        };
+      },
+    },
+
+    authorization: {
+      // Require specific role
+      requiredRole: "admin",
+      // Or require specific permission
+      requiredPermission: "admin:access",
+      // Or custom authorization
+      authorize: async (user) => user.roles.includes("super-admin"),
+    },
+
+    // IP allowlist (enforced in production)
+    allowedIPs: ["10.0.0.0/8", "192.168.1.100"],
+
+    // Rate limiting
+    rateLimit: {
+      windowMs: 60000,
+      maxRequests: 100,
+    },
+  },
+});
+```
+
+### Authentication Methods
+
+**API Key:**
+```bash
+# Via header
+curl -H "X-Admin-API-Key: your-key" localhost:3000/__concave/api/data/users
+
+# Via Bearer token
+curl -H "Authorization: Bearer your-key" localhost:3000/__concave/api/data/users
+```
+
+**Session Auth:**
+Uses existing session from your application's auth system.
+
 ## Pages
 
-The admin UI includes nine pages organized into three sections:
+The admin UI includes multiple pages organized into sections:
 
 ### Overview Section
 
@@ -101,6 +282,75 @@ Error log showing recent API errors:
 - Timestamp
 - Error message
 - Expandable stack trace (click to reveal)
+
+### Data Section
+
+#### Data Explorer
+
+Browse and search resource data with admin bypass:
+
+```typescript
+createAdminUI({
+  dataExplorer: {
+    enabled: true,
+    resources: ["users", "posts"],       // Whitelist (empty = all)
+    excludeFields: {                     // Redact sensitive fields
+      users: ["password", "apiKey"],
+    },
+    maxLimit: 100,                       // Max records per page
+    readOnly: true,                      // Disable mutations
+  },
+});
+```
+
+**Features:**
+- Resource selector dropdown
+- Filter input (RSQL syntax)
+- Column selection
+- Pagination controls
+- Expandable row details
+- Visual "Admin bypass active" warning banner
+
+**API Endpoints:**
+```
+GET  /__concave/api/data/:resource          # List with pagination
+GET  /__concave/api/data/:resource/:id      # Get single record
+GET  /__concave/api/data/:resource/schema   # Schema introspection
+```
+
+All access is logged to the admin audit log.
+
+#### Data Editor
+
+Modify resource data with full audit logging (when `readOnly: false`):
+
+**Features:**
+- "New Record" button with auto-generated form
+- Edit button per row (modal with field editors)
+- Delete button with confirmation dialog
+- Before/after values logged for all mutations
+
+**API Endpoints:**
+```
+POST   /__concave/api/data/:resource        # Create
+PATCH  /__concave/api/data/:resource/:id    # Update
+DELETE /__concave/api/data/:resource/:id    # Delete
+```
+
+#### Admin Audit Log
+
+View all admin bypass operations:
+
+**Features:**
+- Timestamp, user, and operation details
+- Before/after values for mutations
+- Filterable by user, operation type, date range
+- Export to JSON/CSV
+
+**API Endpoint:**
+```
+GET /__concave/api/admin-audit?limit=100&offset=0
+```
 
 ### Tools Section
 
@@ -194,6 +444,86 @@ Database mutation log viewer for subscription replay debugging:
 
 Requires changelog configuration in `createAdminUI()`.
 
+### Background Tasks Section
+
+#### Task Queue Monitor
+
+Monitor and manage background tasks:
+
+```typescript
+createAdminUI({
+  taskMonitor: {
+    enabled: true,
+    scheduler: getTaskScheduler(),
+    workers: myWorkers,
+  },
+});
+```
+
+**Features:**
+- Queue depth by priority (0, 25, 50, 75, 100)
+- List of scheduled/running tasks
+- Task details with input/output
+- Worker status cards
+
+**API Endpoints:**
+```
+GET  /__concave/api/tasks/queue         # Queue stats
+GET  /__concave/api/tasks/task/:id      # Task details
+GET  /__concave/api/tasks/workers       # Worker status
+```
+
+#### Dead Letter Queue
+
+Failed task management:
+
+**Features:**
+- Browse failed tasks
+- View error details and stack traces
+- Retry individual tasks
+- Purge tasks from DLQ
+
+**API Endpoints:**
+```
+GET    /__concave/api/tasks/dlq           # List DLQ entries
+POST   /__concave/api/tasks/dlq/:id/retry # Retry a task
+DELETE /__concave/api/tasks/dlq/:id       # Remove from DLQ
+```
+
+### KV Store Section
+
+#### KV Inspector
+
+Browse and edit the key-value store (development/staging only):
+
+```typescript
+createAdminUI({
+  kvInspector: {
+    enabled: true,
+    kv: myKVStore,
+    readOnly: false,                     // Enable writes
+    allowedPatterns: ["cache:*"],        // Restrict browsable keys
+  },
+});
+```
+
+**Features:**
+- Key browser with glob pattern search
+- Value viewer (JSON formatted for objects)
+- Inline value editor
+- TTL display and modification
+- Key deletion with confirmation
+- Support for string, hash, list, set, and zset types
+
+**API Endpoints:**
+```
+GET    /__concave/api/kv/keys?pattern=*   # List keys
+GET    /__concave/api/kv/key/:key         # Get value
+PUT    /__concave/api/kv/key/:key         # Set value
+DELETE /__concave/api/kv/key/:key         # Delete key
+GET    /__concave/api/kv/key/:key/ttl     # Get TTL
+```
+
 ### Help Section
 
 #### Error Docs
@@ -236,6 +566,47 @@ interface AdminUIConfig {
   // Base path for API URLs (default: "/__concave")
   basePath?: string;
 
+  // Security configuration
+  security?: {
+    mode?: "development" | "staging" | "production";
+    auth?: {
+      disabled?: boolean;
+      apiKey?: string;
+      authenticate?: (req: Request) => Promise<AdminUser | null>;
+    };
+    authorization?: {
+      requiredRole?: string;
+      requiredPermission?: string;
+      authorize?: (user: AdminUser) => Promise<boolean>;
+    };
+    allowedIPs?: string[];
+    rateLimit?: { windowMs: number; maxRequests: number };
+  };
+
+  // Data explorer configuration
+  dataExplorer?: {
+    enabled?: boolean;
+    resources?: string[];
+    excludeFields?: Record<string, string[]>;
+    maxLimit?: number;
+    readOnly?: boolean;
+  };
+
+  // Task queue monitoring
+  taskMonitor?: {
+    enabled?: boolean;
+    scheduler?: TaskScheduler;
+    workers?: TaskWorker[];
+  };
+
+  // KV store inspection
+  kvInspector?: {
+    enabled?: boolean;
+    kv?: KVAdapter;
+    readOnly?: boolean;
+    allowedPatterns?: string[];
+  };
+
   // Metrics collector for request tracking
   metricsCollector?: {
     getRecent: (count: number) => RequestMetric[];
@@ -256,9 +627,11 @@ interface AdminUIConfig {
 ### Full Example
 
 ```typescript
-import { createAdminUI, registerResource } from "concave/ui";
-import { createMetricsCollector, observabilityMiddleware } from "concave/middleware/observability";
-import { createChangelog } from "concave/resource/changelog";
+import { createAdminUI, registerResource } from "@kahveciderin/concave/ui";
+import { createHealthEndpoints } from "@kahveciderin/concave/health";
+import { createMetricsCollector, observabilityMiddleware } from "@kahveciderin/concave/middleware/observability";
+import { createChangelog } from "@kahveciderin/concave/resource/changelog";
+import { getTaskScheduler, startTaskWorkers } from "@kahveciderin/concave/tasks";
 
 const metricsCollector = createMetricsCollector({
   maxMetrics: 1000,
@@ -266,12 +639,41 @@ const metricsCollector = createMetricsCollector({
 });
 
 const changelog = createChangelog({ maxEntries: 10000 });
+const kv = await createKV({ type: "redis", redis: { url: "redis://localhost" } });
+const workers = await startTaskWorkers(kv, getTaskRegistry(), 3);
 
 app.use(observabilityMiddleware({ metrics: metricsCollector }));
 
+// Health endpoints (no auth)
+app.use(createHealthEndpoints({
+  version: "1.0.0",
+  checks: { kv },
+}));
+
+// Admin UI (with auth in production)
 app.use("/__concave", createAdminUI({
   title: "My API Admin",
   metricsCollector,
+  security: {
+    mode: process.env.NODE_ENV as "development" | "staging" | "production",
+    auth: { apiKey: process.env.ADMIN_API_KEY },
+    authorization: { requiredRole: "admin" },
+  },
+  dataExplorer: {
+    enabled: true,
+    readOnly: process.env.NODE_ENV === "production",
+    excludeFields: { users: ["password"] },
+  },
+  taskMonitor: {
+    enabled: true,
+    scheduler: getTaskScheduler(),
+    workers,
+  },
+  kvInspector: {
+    enabled: process.env.NODE_ENV !== "production",
+    kv,
+    readOnly: process.env.NODE_ENV === "staging",
+  },
   changelog: {
     getCurrentSequence: () => changelog.getCurrentSequence(),
     getEntries: (from, limit) => changelog.getEntries(from, limit),
@@ -279,12 +681,30 @@ app.use("/__concave", createAdminUI({
 }));
 ```
 
+## Schema Auto-Discovery
+
+When using `useResource()`, schemas are automatically registered in a global schema registry. The data explorer uses this registry to introspect available resources without manual registration.
+
+```typescript
+// Schemas are automatically discovered
+app.use("/users", useResource(usersTable, { ... }));
+app.use("/posts", useResource(postsTable, { ... }));
+
+// Data explorer will show both users and posts
+// with full schema information including:
+// - Column names and types
+// - Primary keys
+// - Nullable fields
+// - Relations
+// - Available procedures
+```
+
 ## Registering Resources
 
 Resources must be registered to appear in the admin panel:
 
 ```typescript
-import { registerResource, unregisterResource, clearRegistry } from "concave/ui";
+import { registerResource, unregisterResource, clearRegistry } from "@kahveciderin/concave/ui";
 
 // Register a resource
 registerResource({
@@ -357,6 +777,24 @@ The admin UI exposes these JSON API endpoints:
 | `GET /__concave/api/errors` | Error log (up to 100) |
 | `GET /__concave/api/changelog` | Changelog entries |
 | `GET /__concave/api/subscriptions` | Active SSE subscriptions |
+| `GET /__concave/api/environment` | Current environment info |
+| `GET /__concave/api/admin-audit` | Admin audit log |
+| `GET /__concave/api/data/:resource` | Data explorer (list) |
+| `GET /__concave/api/data/:resource/:id` | Data explorer (get) |
+| `GET /__concave/api/data/:resource/schema` | Schema introspection |
+| `POST /__concave/api/data/:resource` | Data editor (create) |
+| `PATCH /__concave/api/data/:resource/:id` | Data editor (update) |
+| `DELETE /__concave/api/data/:resource/:id` | Data editor (delete) |
+| `GET /__concave/api/tasks/queue` | Task queue stats |
+| `GET /__concave/api/tasks/task/:id` | Task details |
+| `GET /__concave/api/tasks/dlq` | Dead letter queue |
+| `POST /__concave/api/tasks/dlq/:id/retry` | Retry failed task |
+| `DELETE /__concave/api/tasks/dlq/:id` | Remove from DLQ |
+| `GET /__concave/api/tasks/workers` | Worker status |
+| `GET /__concave/api/kv/keys` | KV key listing |
+| `GET /__concave/api/kv/key/:key` | KV get value |
+| `PUT /__concave/api/kv/key/:key` | KV set value |
+| `DELETE /__concave/api/kv/key/:key` | KV delete key |
 | `GET /__concave/problems/:type` | Error type documentation |
 
 ## Theming
@@ -384,33 +822,56 @@ The UI uses CSS custom properties for consistent styling:
 
 ## Security
 
-The admin UI is intended for development and staging environments. For production:
+The admin UI is designed for all environments with appropriate security controls:
 
-### Disable in Production
+### Development Mode
+
+Auth is optional with a warning banner. Full debug information available.
+
+### Production Mode
+
+Auth is required. Use one of these approaches:
+
+**API Key Authentication:**
+```typescript
+createAdminUI({
+  security: {
+    mode: "production",
+    auth: { apiKey: process.env.ADMIN_API_KEY },
+  },
+});
+```
+
+**Role-Based Access:**
+```typescript
+createAdminUI({
+  security: {
+    mode: "production",
+    auth: {
+      authenticate: async (req) => validateSession(req),
+    },
+    authorization: { requiredRole: "admin" },
+  },
+});
+```
+
+**IP Allowlisting:**
+```typescript
+createAdminUI({
+  security: {
+    mode: "production",
+    auth: { apiKey: process.env.ADMIN_API_KEY },
+    allowedIPs: ["10.0.0.0/8", "192.168.1.100"],
+  },
+});
+```
+
+### Disable Completely in Production
 
 ```typescript
 if (process.env.NODE_ENV !== "production") {
   app.use("/__concave", createAdminUI({ ... }));
 }
-```
-
-### Protect with Authentication
-
-```typescript
-import { requireAuth } from "concave/auth";
-
-app.use("/__concave", requireAuth(), createAdminUI({ ... }));
-```
-
-### Restrict to Admin Users
-
-```typescript
-app.use("/__concave", (req, res, next) => {
-  if (!req.user?.role === "admin") {
-    return res.status(403).json({ error: "Admin access required" });
-  }
-  next();
-}, createAdminUI({ ... }));
 ```
 
 ## Troubleshooting
@@ -448,9 +909,35 @@ createAdminUI({
 })
 ```
 
+### Health Endpoints Returning 503
+
+Check individual health check results in the response:
+
+```bash
+curl -s localhost:3000/healthz | jq '.checks'
+```
+
+Common issues:
+- KV store not connected
+- Memory threshold exceeded
+- Event loop lag due to heavy processing
+
+### Admin Auth Returning 401
+
+Verify your authentication method:
+
+```bash
+# API key via header
+curl -H "X-Admin-API-Key: your-key" localhost:3000/__concave/api/resources
+
+# API key via Bearer token
+curl -H "Authorization: Bearer your-key" localhost:3000/__concave/api/resources
+```
+
 ## Related
 
 - [Resources](./resources.md) - Resource configuration
+- [Tasks](./tasks.md) - Background task configuration
 - [Middleware](./middleware.md) - Observability setup
 - [Filtering](./filtering.md) - Filter syntax details
 - [Subscriptions](./subscriptions.md) - Real-time subscriptions

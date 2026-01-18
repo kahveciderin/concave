@@ -450,3 +450,18 @@ input:focus {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* Version badge */
+.version-badge {
+  text-align: center;
+  padding: 8px;
+  font-size: 11px;
+  color: #999;
+  border-top: 1px solid #f0f0f0;
+}
+
+.version-text {
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid #ddd;
+}

@@ -11,8 +11,8 @@ import {
   getTaskScheduler,
   getTaskRegistry,
   startTaskWorkers
-} from "concave/tasks";
-import { createKV } from "concave/kv";
+} from "@kahveciderin/concave/tasks";
+import { createKV } from "@kahveciderin/concave/kv";
 
 // Initialize KV store (Redis for production, memory for dev)
 const kv = await createKV({ type: "redis", redis: { url: "redis://localhost" } });
@@ -54,7 +54,7 @@ const taskId = await getTaskScheduler().enqueue(sendEmailTask, {
 ### Basic Task
 
 ```typescript
-import { defineTask } from "concave/tasks";
+import { defineTask } from "@kahveciderin/concave/tasks";
 import { z } from "zod";
 
 const processOrderTask = defineTask({
@@ -212,7 +212,7 @@ const depth = await scheduler.getQueueDepth();
 ### Starting Workers
 
 ```typescript
-import { startTaskWorkers, createTaskWorker } from "concave/tasks";
+import { startTaskWorkers, createTaskWorker } from "@kahveciderin/concave/tasks";
 
 // Start multiple workers
 const workers = await startTaskWorkers(kv, registry, 3, {
@@ -314,7 +314,7 @@ retry: {
 Tasks that exceed max attempts go to the dead letter queue:
 
 ```typescript
-import { createDeadLetterQueue } from "concave/tasks";
+import { createDeadLetterQueue } from "@kahveciderin/concave/tasks";
 
 const dlq = createDeadLetterQueue(kv, requeue);
 
@@ -346,8 +346,8 @@ const count = await dlq.count();
 Trigger tasks automatically when resources change:
 
 ```typescript
-import { useResource } from "concave";
-import { createTaskTriggerHooks, composeHooks } from "concave/tasks";
+import { useResource } from "@kahveciderin/concave";
+import { createTaskTriggerHooks, composeHooks } from "@kahveciderin/concave/tasks";
 
 // Define the task
 const sendWelcomeEmailTask = defineTask({
@@ -416,7 +416,7 @@ interface ResourceTaskTrigger {
 Tasks use distributed locking to prevent duplicate execution:
 
 ```typescript
-import { createTaskLock } from "concave/tasks";
+import { createTaskLock } from "@kahveciderin/concave/tasks";
 
 const lock = createTaskLock(kv);
 
@@ -489,7 +489,7 @@ await scheduler.schedule(myTask, input, {
 ## Recurring Task Management
 
 ```typescript
-import { createRecurringManager, startRecurringScheduler } from "concave/tasks";
+import { createRecurringManager, startRecurringScheduler } from "@kahveciderin/concave/tasks";
 
 const recurring = createRecurringManager(kv);
 
@@ -540,8 +540,8 @@ stop();
 
 ```typescript
 import express from "express";
-import { useResource } from "concave";
-import { createKV } from "concave/kv";
+import { useResource } from "@kahveciderin/concave";
+import { createKV } from "@kahveciderin/concave/kv";
 import {
   defineTask,
   initializeTasks,
@@ -550,7 +550,7 @@ import {
   startTaskWorkers,
   startRecurringScheduler,
   createTaskTriggerHooks,
-} from "concave/tasks";
+} from "@kahveciderin/concave/tasks";
 import { z } from "zod";
 
 const app = express();

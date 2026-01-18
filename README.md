@@ -42,7 +42,7 @@ A production-ready real-time API framework for Express.js and Drizzle ORM. Defin
 ### Installation
 
 ```bash
-npm install @kahveciderin/concave drizzle-orm @libsql/client
+npm install @kahveciderin/concave drizzle-orm @libsql/client express
 ```
 
 ### Define Your Schema
@@ -64,7 +64,7 @@ export const usersTable = sqliteTable("users", {
 import express from "express";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
-import { useResource } from "concave/resource";
+import { useResource } from "@kahveciderin/concave/resource";
 import { usersTable } from "./schema";
 
 const client = createClient({ url: "file:./data.db" });
@@ -102,8 +102,8 @@ app.listen(3000);
 ## Client Library
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
-import { useLiveList, useAuth } from "concave/client/react";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { useLiveList, useAuth } from "@kahveciderin/concave/client/react";
 
 // Initialize client with OIDC auth
 const client = getOrCreateClient({
@@ -265,7 +265,7 @@ app.use("/api/posts", useResource(postsTable, {
 Built-in OpenID Connect provider with PKCE support:
 
 ```typescript
-import { createOIDCProvider } from "concave";
+import { createOIDCProvider } from "@kahveciderin/concave";
 
 const { router, middleware } = createOIDCProvider({
   issuer: "https://auth.myapp.com",
@@ -302,8 +302,8 @@ app.use("/api", middleware, apiRoutes);
 Distributed task queue with retries and scheduling:
 
 ```typescript
-import { defineTask, initializeTasks, getTaskScheduler, startTaskWorkers } from "concave/tasks";
-import { createKV } from "concave/kv";
+import { defineTask, initializeTasks, getTaskScheduler, startTaskWorkers } from "@kahveciderin/concave/tasks";
+import { createKV } from "@kahveciderin/concave/kv";
 
 const kv = await createKV({ type: "redis", redis: { url: "redis://localhost" } });
 initializeTasks(kv);

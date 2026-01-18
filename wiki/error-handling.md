@@ -216,7 +216,7 @@ client.setAuthErrorHandler(() => {
 With the `useAuth` hook, auth errors are handled automatically:
 
 ```typescript
-import { useAuth, useLiveList } from "concave/client/react";
+import { useAuth, useLiveList } from "@kahveciderin/concave/client/react";
 
 function App() {
   const { user, isAuthenticated, logout } = useAuth<User>();

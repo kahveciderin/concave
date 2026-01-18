@@ -7,8 +7,8 @@ Concave provides real-time subscriptions via Server-Sent Events (SSE).
 The easiest way to use subscriptions is with the `useLiveList` hook:
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
-import { useLiveList } from "concave/client/react";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { useLiveList } from "@kahveciderin/concave/client/react";
 
 const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -50,7 +50,7 @@ curl -N "http://localhost:3000/users/subscribe"
 For non-React usage or more control:
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
 
 const client = getOrCreateClient({ baseUrl: "http://localhost:3000" });
 const users = client.resource<User>("/users");

@@ -1,6 +1,6 @@
 {
   "name": "@kahveciderin/concave",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Real-time resource API framework for Express.js with TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
@@ -58,6 +58,10 @@
     "./middleware/error": {
       "types": "./dist/middleware/error.d.ts",
       "import": "./dist/middleware/error.js"
+    },
+    "./middleware/logging": {
+      "types": "./dist/middleware/logging.d.ts",
+      "import": "./dist/middleware/logging.js"
     }
   },
   "files": [

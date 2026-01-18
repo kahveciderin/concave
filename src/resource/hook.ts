@@ -82,6 +82,7 @@ import {
   RelationsConfig,
   IncludeConfig,
 } from "./relations";
+import { registerResourceSchema, setResourceMountPath } from "@/ui/schema-registry";
 
 const DEFAULT_BATCH_LIMITS = {
   create: 100,
@@ -115,6 +116,27 @@ export const useResource = <TConfig extends TableConfig>(
     config: { relations: config.relations as RelationsConfig | undefined },
   });
 
+  // Default capabilities: all enabled unless explicitly disabled
+  const capabilities = {
+    enableCreate: config.capabilities?.enableCreate ?? true,
+    enableUpdate: config.capabilities?.enableUpdate ?? true,
+    enableDelete: config.capabilities?.enableDelete ?? true,
+    enableSubscribe: config.capabilities?.enableSubscribe ?? true,
+    enableAggregations: config.capabilities?.enableAggregations ?? true,
+    enableBatch: config.capabilities?.enableBatch ?? !!config.batch,
+  };
+
+  registerResourceSchema(resourceName, schema as Table<TableConfig>, db, config.id, {
+    relations: config.relations as RelationsConfig | undefined,
+    auth: config.auth,
+    batch: config.batch,
+    capabilities,
+    sseEnabled: !!config.sse,
+    procedures: config.procedures ? Object.keys(config.procedures) : undefined,
+    generatedFields: config.generatedFields,
+    fields: config.fields,
+  });
+
   const relationLoader = config.relations
     ? new RelationLoader(
         db,
@@ -135,6 +157,16 @@ export const useResource = <TConfig extends TableConfig>(
     : undefined;
 
   const router = Router();
+
+  // Capture mount path on first request for OpenAPI auto-discovery
+  let mountPathCaptured = false;
+  router.use((req, _res, next) => {
+    if (!mountPathCaptured) {
+      setResourceMountPath(resourceName, req.baseUrl);
+      mountPathCaptured = true;
+    }
+    next();
+  });
 
   const filterer = createResourceFilter(schema, config.customOperators ?? {});
 

@@ -15,8 +15,8 @@ When your application goes offline:
 The simplest way to enable offline support is with `offline: true`:
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
-import { useLiveList } from "concave/client/react";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { useLiveList } from "@kahveciderin/concave/client/react";
 
 const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -54,7 +54,7 @@ function TodoApp() {
 ### Simple Configuration
 
 ```typescript
-import { createClient } from "concave/client";
+import { createClient } from "@kahveciderin/concave/client";
 
 // Just pass offline: true for sensible defaults
 const client = createClient({
@@ -70,7 +70,7 @@ const client = createClient({
 For fine-grained control, pass an object:
 
 ```typescript
-import { createClient, LocalStorageOfflineStorage } from "concave/client";
+import { createClient, LocalStorageOfflineStorage } from "@kahveciderin/concave/client";
 
 const client = createClient({
   baseUrl: "http://localhost:3000/api",
@@ -95,7 +95,7 @@ const client = createClient({
 Or implement your own storage (e.g., IndexedDB):
 
 ```typescript
-import { OfflineStorage, OfflineMutation } from "concave/client";
+import { OfflineStorage, OfflineMutation } from "@kahveciderin/concave/client";
 
 class IndexedDBStorage implements OfflineStorage {
   async getMutations(): Promise<OfflineMutation[]> { /* ... */ }
@@ -191,7 +191,7 @@ const client = createClient({
 For more granular control, use the OfflineManager directly:
 
 ```typescript
-import { createOfflineManager, InMemoryOfflineStorage } from "concave/client";
+import { createOfflineManager, InMemoryOfflineStorage } from "@kahveciderin/concave/client";
 
 const offlineManager = createOfflineManager({
   config: {
@@ -232,8 +232,8 @@ const isOnline = client.offline?.getIsOnline();
 The `useLiveList` hook handles all offline logic automatically:
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
-import { useLiveList } from "concave/client/react";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { useLiveList } from "@kahveciderin/concave/client/react";
 
 const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -293,7 +293,7 @@ function TodoApp() {
 For non-React apps or custom integrations:
 
 ```typescript
-import { createClient, createLiveQuery, LocalStorageOfflineStorage } from "concave/client";
+import { createClient, createLiveQuery, LocalStorageOfflineStorage } from "@kahveciderin/concave/client";
 
 const client = createClient({
   baseUrl: "/api",

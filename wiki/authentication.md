@@ -10,7 +10,7 @@ The OIDC provider gives you a complete identity server with standard endpoints, 
 
 ```typescript
 import express from "express";
-import { createOIDCProvider } from "concave";
+import { createOIDCProvider } from "@kahveciderin/concave";
 
 const app = express();
 app.use(express.json());
@@ -139,7 +139,7 @@ interface OIDCProviderConfig {
 Add Google, Microsoft, or other OIDC providers:
 
 ```typescript
-import { createOIDCProvider, oidcProviders } from "concave";
+import { createOIDCProvider, oidcProviders } from "@kahveciderin/concave";
 
 const { router, middleware } = createOIDCProvider({
   issuer: "https://auth.myapp.com",
@@ -184,7 +184,7 @@ The Concave client library handles OIDC flows automatically with PKCE, token ref
 ### Basic Setup
 
 ```typescript
-import { createClient } from "concave/client";
+import { createClient } from "@kahveciderin/concave/client";
 
 const client = createClient({
   baseUrl: "https://api.myapp.com",
@@ -232,7 +232,7 @@ unsubscribe();
 
 ```typescript
 import { useState, useEffect } from "react";
-import { createClient, AuthState } from "concave/client";
+import { createClient, AuthState } from "@kahveciderin/concave/client";
 
 const client = createClient({
   baseUrl: "https://api.myapp.com",
@@ -305,7 +305,7 @@ import {
   MemoryStorage,
   LocalStorageAdapter,
   SessionStorageAdapter,
-} from "concave/client";
+} from "@kahveciderin/concave/client";
 
 // Memory storage (default - most secure, tokens lost on refresh)
 const client = createClient({
@@ -367,7 +367,7 @@ The `useAuth` function creates auth routes and middleware in one call:
 ```typescript
 import express from "express";
 import cookieParser from "cookie-parser";
-import { createPassportAdapter, useAuth } from "concave";
+import { createPassportAdapter, useAuth } from "@kahveciderin/concave";
 
 const app = express();
 app.use(express.json());
@@ -465,7 +465,7 @@ interface UseAuthOptions {
 For custom username/password authentication:
 
 ```typescript
-import { createPassportAdapter } from "concave";
+import { createPassportAdapter } from "@kahveciderin/concave";
 
 const authAdapter = createPassportAdapter({
   // Required: lookup user by ID
@@ -493,7 +493,7 @@ const authAdapter = createPassportAdapter({
 For integration with Auth.js/NextAuth.js:
 
 ```typescript
-import { createAuthJsAdapter } from "concave";
+import { createAuthJsAdapter } from "@kahveciderin/concave";
 
 const authAdapter = createAuthJsAdapter({
   db,
@@ -510,7 +510,7 @@ const authAdapter = createAuthJsAdapter({
 Use the `rsql` template helper to define row-level access control:
 
 ```typescript
-import { useResource, rsql } from "concave";
+import { useResource, rsql } from "@kahveciderin/concave";
 
 app.use("/api/posts", useResource(postsTable, {
   id: postsTable.id,
@@ -541,7 +541,7 @@ app.use("/api/posts", useResource(postsTable, {
 Common patterns are available as presets:
 
 ```typescript
-import { scopePatterns } from "concave";
+import { scopePatterns } from "@kahveciderin/concave";
 
 // Owner-only access
 auth: scopePatterns.ownerOnly("userId"),
@@ -561,7 +561,7 @@ auth: scopePatterns.orgBased("organizationId"),
 Build scopes programmatically:
 
 ```typescript
-import { rsql, eq, ne, gt, gte, lt, lte, inList, and, or } from "concave";
+import { rsql, eq, ne, gt, gte, lt, lte, inList, and, or } from "@kahveciderin/concave";
 
 // Basic equality
 const scope = eq("userId", user.id);
@@ -587,7 +587,7 @@ const scope = rsql`userId=="${user.id}";status=="active"`;
 Additional middleware helpers:
 
 ```typescript
-import { requireAuth, requireRole, requirePermission } from "concave";
+import { requireAuth, requireRole, requirePermission } from "@kahveciderin/concave";
 
 // Require authentication
 app.get("/profile", requireAuth(), (req, res) => {
@@ -612,8 +612,8 @@ app.post("/posts", requirePermission("posts:create"), (req, res) => {
 The `useAuth` hook provides authentication state in React:
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
-import { useAuth } from "concave/client/react";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { useAuth } from "@kahveciderin/concave/client/react";
 
 const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -795,7 +795,7 @@ Clears the session and logs out the user.
 If you need more control, you can use the adapter's routes directly:
 
 ```typescript
-import { createPassportAdapter, createAuthMiddleware } from "concave";
+import { createPassportAdapter, createAuthMiddleware } from "@kahveciderin/concave";
 
 const authAdapter = createPassportAdapter({
   getUserById: async (id) => db.query.users.findFirst({ where: eq(users.id, id) }),
@@ -824,7 +824,7 @@ app.post("/custom-login", async (req, res) => {
 Good for development. Sessions are lost on server restart.
 
 ```typescript
-import { InMemorySessionStore } from "concave";
+import { InMemorySessionStore } from "@kahveciderin/concave";
 
 const authAdapter = createPassportAdapter({
   sessionStore: new InMemorySessionStore(),

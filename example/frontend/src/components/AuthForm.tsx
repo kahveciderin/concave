@@ -2,9 +2,10 @@ import { useState, FormEvent } from 'react';
 
 interface AuthFormProps {
   onLogin: () => void;
+  version?: string;
 }
 
-export function AuthForm({ onLogin }: AuthFormProps) {
+export function AuthForm({ onLogin, version }: AuthFormProps) {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -99,6 +100,7 @@ export function AuthForm({ onLogin }: AuthFormProps) {
               : 'Already have an account? Sign in'}
           </button>
         </form>
+        {version && <div className="version-badge">v{version}</div>}
       </div>
     </div>
   );

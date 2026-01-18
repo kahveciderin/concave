@@ -9,7 +9,7 @@ When you define auth scopes on a resource, all queries automatically have the sc
 ## Basic Usage
 
 ```typescript
-import { createSecureQueryBuilder } from "concave/resource/secure-query";
+import { createSecureQueryBuilder } from "@kahveciderin/concave/resource/secure-query";
 
 const builder = createSecureQueryBuilder({
   db,

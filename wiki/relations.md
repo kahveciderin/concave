@@ -14,7 +14,7 @@ Concave supports defining relationships between resources and loading related da
 ## Defining Relations
 
 ```typescript
-import { useResource } from "concave";
+import { useResource } from "@kahveciderin/concave";
 
 app.use("/api/posts", useResource(postsTable, {
   db,
@@ -279,7 +279,7 @@ Note: Filtering on relations requires `filterable: true` in the relation config 
 ## TypeScript Types
 
 ```typescript
-import { RelationType, RelationConfig, IncludeSpec, IncludeConfig } from "concave";
+import { RelationType, RelationConfig, IncludeSpec, IncludeConfig } from "@kahveciderin/concave";
 
 // RelationType
 type RelationType = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";

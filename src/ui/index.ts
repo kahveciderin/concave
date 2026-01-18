@@ -1,9 +1,42 @@
 export { createAdminUI } from "./middleware";
 export type { AdminUIConfig } from "./middleware";
 export {
-  registerResource,
-  unregisterResource,
-  getRegisteredResources,
-  clearRegistry,
-} from "./registry";
-export type { ResourceRegistry } from "./registry";
+  registerResourceSchema,
+  unregisterResourceSchema,
+  getResourceSchema,
+  getAllResourceSchemas,
+  getSchemaInfo,
+  getAllSchemaInfos,
+  clearSchemaRegistry,
+  getAllResourcesForDisplay,
+  getResourcesForOpenAPI,
+  setResourceMountPath,
+} from "./schema-registry";
+export type {
+  SchemaRegistryEntry,
+  ColumnInfo,
+  SchemaInfo,
+  ResourceDisplayInfo,
+  OpenAPIResource,
+} from "./schema-registry";
+export {
+  createAdminAuthMiddleware,
+  logAdminAction,
+  getAdminAuditLog,
+  clearAdminAuditLog,
+  getAdminUser,
+  requireAdminUser,
+  detectEnvironment,
+} from "./admin-auth";
+export type {
+  AdminUser,
+  AdminSecurityConfig,
+  AdminAuditEntry,
+  EnvironmentMode,
+} from "./admin-auth";
+export { createDataExplorerRoutes } from "./data-explorer";
+export type { DataExplorerConfig } from "./data-explorer";
+export { createTaskMonitorRoutes } from "./task-monitor";
+export type { TaskMonitorConfig } from "./task-monitor";
+export { createKVInspectorRoutes } from "./kv-inspector";
+export type { KVInspectorConfig } from "./kv-inspector";

@@ -5,7 +5,7 @@ Concave can automatically generate OpenAPI 3.0 specifications from your resource
 ## Basic Usage
 
 ```typescript
-import { generateOpenAPISpec, serveOpenAPISpec } from "concave/openapi";
+import { generateOpenAPISpec, serveOpenAPISpec } from "@kahveciderin/concave/openapi";
 
 // Generate spec from resources
 const spec = generateOpenAPISpec({

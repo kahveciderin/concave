@@ -13,6 +13,7 @@ This folder contains the formal contracts (guarantees and non-guarantees) for th
 - [pagination.md](./pagination.md) - Cursor integrity and consistency guarantees
 - [auth.md](./auth.md) - Authentication and authorization threat model
 - [offline-sync.md](./offline-sync.md) - Offline mutation and sync guarantees
+- [environment-variables.md](./environment-variables.md) - Environment variable parsing and public exposure guarantees
 
 ## How to Read These Contracts
 

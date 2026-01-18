@@ -41,7 +41,7 @@ export const db = drizzle(client);
 ```typescript
 // src/main.ts
 import express from "express";
-import { useResource } from "concave/resource";
+import { useResource } from "@kahveciderin/concave/resource";
 import { usersTable } from "./db/schema";
 import { db } from "./db/db";
 
@@ -124,7 +124,7 @@ Connect from React with real-time subscriptions and offline support:
 
 ```typescript
 // client.ts
-import { getOrCreateClient } from "concave/client";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
 
 export const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -133,7 +133,7 @@ export const client = getOrCreateClient({
 });
 
 // App.tsx
-import { useAuth, useLiveList } from "concave/client/react";
+import { useAuth, useLiveList } from "@kahveciderin/concave/client/react";
 
 function App() {
   const { user, isAuthenticated, logout } = useAuth<User>();

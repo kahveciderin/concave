@@ -279,3 +279,16 @@ export type {
   IncludeOptions,
   IncludeConfig,
 } from "./query-builder";
+
+export {
+  createEnvClient,
+  fetchPublicEnv,
+  fetchEnvSchema,
+  generateEnvTypeScript,
+} from "./env";
+export type {
+  EnvClient,
+  EnvClientConfig,
+  EnvSchemaField,
+  PublicEnvSchema,
+} from "./env";

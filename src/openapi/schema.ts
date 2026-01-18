@@ -3,6 +3,7 @@ import { Table, TableConfig, getTableColumns } from "drizzle-orm";
 import { ResourceCapabilities, FieldPolicies, ProcedureDefinition } from "@/resource/types";
 import { CONCAVE_VERSION } from "@/middleware/versioning";
 import { generateOpenAPISpec, RegisteredResource, OpenAPIConfig } from "./generator";
+import { getResourcesForOpenAPI } from "@/ui/schema-registry";
 
 export interface ResourceSchemaInfo {
   name: string;
@@ -313,18 +314,40 @@ export const generateTypeScriptTypes = (schema: ConcaveSchema): string => {
   return output;
 };
 
-export const createConcaveRouter = (
-  resources: RegisteredResource[],
+export interface ConcaveRouterConfig extends OpenAPIConfig {
+  pathPrefix?: string;
+}
+
+export function createConcaveRouter(config?: ConcaveRouterConfig): Router;
+export function createConcaveRouter(resources: RegisteredResource[], openApiConfig?: OpenAPIConfig): Router;
+export function createConcaveRouter(
+  resourcesOrConfig?: RegisteredResource[] | ConcaveRouterConfig,
   openApiConfig?: OpenAPIConfig
-): Router => {
+): Router {
   const router = Router();
 
+  // Determine if using auto-discovery or explicit resources
+  const isAutoDiscovery = !Array.isArray(resourcesOrConfig);
+  const config: ConcaveRouterConfig = isAutoDiscovery
+    ? (resourcesOrConfig as ConcaveRouterConfig) ?? {}
+    : openApiConfig ?? {};
+
+  const getResources = (): RegisteredResource[] => {
+    if (!isAutoDiscovery) {
+      return resourcesOrConfig as RegisteredResource[];
+    }
+    // Auto-discover from schema registry (uses captured mount paths when available)
+    return getResourcesForOpenAPI(config.pathPrefix);
+  };
+
   router.get("/schema", (_req: Request, res: Response) => {
+    const resources = getResources();
     const schema = buildConcaveSchema(resources);
     res.json(schema);
   });
 
   router.get("/schema/typescript", (_req: Request, res: Response) => {
+    const resources = getResources();
     const schema = buildConcaveSchema(resources);
     const types = generateTypeScriptTypes(schema);
     res.set("Content-Type", "text/typescript");
@@ -332,13 +355,15 @@ export const createConcaveRouter = (
   });
 
   router.get("/openapi.json", (_req: Request, res: Response) => {
-    const spec = generateOpenAPISpec(resources, openApiConfig);
+    const resources = getResources();
+    const spec = generateOpenAPISpec(resources, config);
     res.json(spec);
   });
 
   router.get("/openapi.yaml", async (_req: Request, res: Response) => {
     try {
-      const spec = generateOpenAPISpec(resources, openApiConfig);
+      const resources = getResources();
+      const spec = generateOpenAPISpec(resources, config);
       const yaml = JSON.stringify(spec, null, 2);
       res.set("Content-Type", "text/yaml");
       res.send(yaml);
@@ -348,6 +373,7 @@ export const createConcaveRouter = (
   });
 
   router.get("/health", (_req: Request, res: Response) => {
+    const resources = getResources();
     res.json({
       status: "ok",
       version: CONCAVE_VERSION,
@@ -357,6 +383,6 @@ export const createConcaveRouter = (
   });
 
   return router;
-};
+}
 
 export const SCHEMA_ENDPOINT = "/__concave";

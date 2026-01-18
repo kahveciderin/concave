@@ -251,5 +251,73 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
   };
 }
 
+export interface UsePublicEnvOptions {
+  baseUrl?: string;
+  envPath?: string;
+  refreshInterval?: number;
+  enabled?: boolean;
+}
+
+export interface UsePublicEnvResult<T> {
+  env: T | null;
+  isLoading: boolean;
+  error: Error | null;
+  refetch: () => Promise<void>;
+}
+
+export function usePublicEnv<T = unknown>(
+  options: UsePublicEnvOptions = {}
+): UsePublicEnvResult<T> {
+  const {
+    baseUrl = typeof window !== "undefined" ? window.location.origin : "",
+    envPath = "/api/env",
+    refreshInterval,
+    enabled = true,
+  } = options;
+
+  const [env, setEnv] = useState<T | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const fetchEnv = useCallback(async () => {
+    if (!enabled) return;
+
+    try {
+      setIsLoading(true);
+      setError(null);
+      const response = await fetch(`${baseUrl}${envPath}`, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch env: ${response.status}`);
+      }
+      const data = await response.json();
+      setEnv(data as T);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [baseUrl, envPath, enabled]);
+
+  useEffect(() => {
+    fetchEnv();
+  }, [fetchEnv]);
+
+  useEffect(() => {
+    if (!refreshInterval || !enabled) return;
+
+    const interval = setInterval(fetchEnv, refreshInterval);
+    return () => clearInterval(interval);
+  }, [fetchEnv, refreshInterval, enabled]);
+
+  return {
+    env,
+    isLoading,
+    error,
+    refetch: fetchEnv,
+  };
+}
+
 export { statusLabel } from "./live-store";
 export type { LiveQueryStatus, LiveQueryState, LiveQueryMutations, LiveQuery, SubscriptionMode } from "./live-store";

@@ -138,8 +138,33 @@ export type {
 } from "./middleware/observability";
 
 // Admin UI
-export { createAdminUI, registerResource } from "./ui";
-export type { AdminUIConfig, ResourceRegistry } from "./ui";
+export {
+  createAdminUI,
+  registerResourceSchema,
+  unregisterResourceSchema,
+  getResourceSchema,
+  getAllResourceSchemas,
+  getSchemaInfo,
+  getAllSchemaInfos,
+  getAllResourcesForDisplay,
+} from "./ui";
+export type {
+  AdminUIConfig,
+  SchemaRegistryEntry,
+  ColumnInfo,
+  SchemaInfo,
+  ResourceDisplayInfo,
+} from "./ui";
+
+// Health Endpoints
+export { createHealthEndpoints } from "./health";
+export type {
+  HealthConfig,
+  HealthResponse,
+  HealthCheckResult,
+  HealthChecks,
+  HealthThresholds,
+} from "./health";
 
 // OpenAPI
 export {
@@ -257,3 +282,7 @@ export type {
   IncludeSpec,
   IncludeConfig,
 } from "./resource/types";
+
+// Environment Variables
+export { createEnv, envVariable, usePublicEnv } from "./env";
+export type { PublicEnvConfig, PublicEnvSchema, EnvSchemaField } from "./env";

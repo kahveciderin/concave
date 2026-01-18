@@ -7,8 +7,8 @@ The Concave client library provides a type-safe, real-time client for interactin
 The client is included with the main package:
 
 ```typescript
-import { createClient, getOrCreateClient } from "concave/client";
-import { useLiveList, useAuth } from "concave/client/react";
+import { createClient, getOrCreateClient } from "@kahveciderin/concave/client";
+import { useLiveList, useAuth } from "@kahveciderin/concave/client/react";
 ```
 
 ## Quick Start
@@ -16,8 +16,8 @@ import { useLiveList, useAuth } from "concave/client/react";
 ### Basic Setup
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
-import { useLiveList, useAuth } from "concave/client/react";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { useLiveList, useAuth } from "@kahveciderin/concave/client/react";
 
 // Initialize client (HMR-safe)
 const client = getOrCreateClient({
@@ -52,7 +52,7 @@ function TodoApp() {
 Creates a new client instance:
 
 ```typescript
-import { createClient } from "concave/client";
+import { createClient } from "@kahveciderin/concave/client";
 
 const client = createClient({
   baseUrl: "http://localhost:3000",
@@ -71,7 +71,7 @@ const client = createClient({
 For HMR-safe initialization in development, use `getOrCreateClient`. It returns the existing client if one was already created:
 
 ```typescript
-import { getOrCreateClient } from "concave/client";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
 
 // Safe to call multiple times - returns same instance
 const client = getOrCreateClient({
@@ -287,7 +287,7 @@ const result = await todos.rpc<
 The primary hook for real-time lists with optimistic updates:
 
 ```typescript
-import { useLiveList } from "concave/client/react";
+import { useLiveList } from "@kahveciderin/concave/client/react";
 
 function TodoList() {
   const {
@@ -450,7 +450,7 @@ function TodoItem({ todo }) {
 Hook for authentication state management:
 
 ```typescript
-import { useAuth } from "concave/client/react";
+import { useAuth } from "@kahveciderin/concave/client/react";
 
 interface User {
   id: string;
@@ -544,7 +544,7 @@ subscription.unsubscribe();
 For non-React usage or custom integrations, use the LiveQuery store directly:
 
 ```typescript
-import { createLiveQuery, statusLabel } from "concave/client";
+import { createLiveQuery, statusLabel } from "@kahveciderin/concave/client";
 
 const todos = client.resource<Todo>("/api/todos");
 
@@ -591,7 +591,7 @@ liveQuery.destroy();
 Generate TypeScript types from your API schema:
 
 ```typescript
-import { generateTypes } from "concave/client";
+import { generateTypes } from "@kahveciderin/concave/client";
 import { writeFileSync } from "fs";
 
 async function main() {
@@ -617,7 +617,7 @@ npx concave typegen --server http://localhost:3000 --output ./src/generated/api-
 ## Error Handling
 
 ```typescript
-import { TransportError } from "concave/client";
+import { TransportError } from "@kahveciderin/concave/client";
 
 try {
   await todos.get("nonexistent");
@@ -644,7 +644,7 @@ Here's a complete example of a todo app with authentication, real-time updates, 
 
 ```typescript
 // client.ts
-import { getOrCreateClient } from "concave/client";
+import { getOrCreateClient } from "@kahveciderin/concave/client";
 
 export const client = getOrCreateClient({
   baseUrl: location.origin,
@@ -654,7 +654,7 @@ export const client = getOrCreateClient({
 
 // App.tsx
 import { useEffect, useState } from "react";
-import { useAuth, useLiveList } from "concave/client/react";
+import { useAuth, useLiveList } from "@kahveciderin/concave/client/react";
 import { client } from "./client";
 
 interface User {
