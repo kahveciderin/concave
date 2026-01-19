@@ -5,10 +5,18 @@ import { CONCAVE_VERSION } from "@/middleware/versioning";
 import { generateOpenAPISpec, RegisteredResource, OpenAPIConfig } from "./generator";
 import { getResourcesForOpenAPI } from "@/ui/schema-registry";
 
+export interface RelationSchemaInfo {
+  name: string;
+  resource: string;
+  type: "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
+  nullable?: boolean;
+}
+
 export interface ResourceSchemaInfo {
   name: string;
   path: string;
   fields: FieldSchemaInfo[];
+  relations?: RelationSchemaInfo[];
   capabilities: ResourceCapabilities;
   fieldPolicies?: FieldPolicies;
   procedures: string[];
@@ -187,6 +195,12 @@ export const buildConcaveSchema = (
       name: r.name,
       path: r.path,
       fields: extractSchemaInfo(r.schema),
+      relations: r.relations?.map((rel) => ({
+        name: rel.name,
+        resource: rel.resource,
+        type: rel.type,
+        nullable: rel.nullable,
+      })),
       capabilities: r.capabilities ?? {
         enableAggregations: true,
         enableBatch: true,

@@ -17,6 +17,7 @@ import {
 import { Transport, TransportError } from "./transport";
 import { createSubscription, SubscriptionManager } from "./subscription-manager";
 import { OfflineManager } from "./offline";
+import { ResourceQueryBuilder } from "./resource-query-builder";
 
 export interface RepositoryConfig {
   transport: Transport;
@@ -125,7 +126,7 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     return response.data;
   }
 
-  async create(data: Omit<T, "id">, options: CreateOptions = {}): Promise<T> {
+  async create(data: Partial<Omit<T, "id">>, options: CreateOptions = {}): Promise<T> {
     const optimisticId = options.optimisticId ?? `optimistic_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // Default to optimistic when offline manager is present (opt-out with optimistic: false)
@@ -149,7 +150,7 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     return response.data;
   }
 
-  private backgroundCreate(data: Omit<T, "id">, optimisticId: string): void {
+  private backgroundCreate(data: Partial<Omit<T, "id">>, optimisticId: string): void {
     this.transport.request<T & { _optimisticId?: string }>({
       method: "POST",
       path: this.resourcePath,
@@ -272,7 +273,7 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     });
   }
 
-  async batchCreate(items: Omit<T, "id">[]): Promise<T[]> {
+  async batchCreate(items: Partial<Omit<T, "id">>[]): Promise<T[]> {
     const response = await this.transport.request<{ items: T[] }>({
       method: "POST",
       path: `${this.resourcePath}/batch`,
@@ -324,6 +325,10 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     });
 
     return response.data.data;
+  }
+
+  query(): ResourceQueryBuilder<T> {
+    return new ResourceQueryBuilder<T>(this.transport, this.resourcePath);
   }
 }
 

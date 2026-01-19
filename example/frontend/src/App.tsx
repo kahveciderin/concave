@@ -1,27 +1,27 @@
 import { getOrCreateClient } from 'concave/client';
-import { useAuth, useLiveList, usePublicEnv, useSearch, useFileUpload, UploadedFile } from 'concave/client/react';
+import { useAuth, useLiveList, usePublicEnv, useSearch, useFileUpload } from 'concave/client/react';
 import { AuthForm } from './components/AuthForm';
-import type { Todo, User, Category, Tag, FileRecord } from './generated/api-types';
+import { createTypedClient } from './generated/api-types';
+import type { PublicEnv } from './generated/api-types';
 import { useState, useEffect, useRef } from 'react';
 
-interface PublicEnv {
-  PUBLIC_VERSION: string;
-  PUBLIC_OPENSEARCH_ENABLED: boolean;
+// User type for auth
+interface User {
+  id: string;
+  email: string;
+  name: string;
 }
 
-// Extended Todo type with included relations
-interface TodoWithRelations extends Todo {
-  category?: Category | null;
-  image?: FileRecord | null;
-  tags?: Tag[];
-}
-
-// Initialize client once (HMR-safe)
-const client = getOrCreateClient({
+// Initialize typed client once (HMR-safe)
+// Now you can use: client.resources.todos.query() for type-safe queries!
+const baseClient = getOrCreateClient({
   baseUrl: location.origin,
   credentials: 'include',
   offline: true,
 });
+
+// Wrap with typed client for type-safe resource accessors
+const client = createTypedClient(baseClient);
 
 export function App() {
   const { user, isLoading, isAuthenticated, logout } = useAuth<User>();
@@ -29,7 +29,7 @@ export function App() {
 
   // Set auth error handler (redirects to login on 401)
   useEffect(() => {
-    client.setAuthErrorHandler(logout);
+    baseClient.setAuthErrorHandler(logout);
   }, [logout]);
 
   if (isLoading) {
@@ -62,9 +62,11 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
   const [newCategoryColor, setNewCategoryColor] = useState('#6366f1');
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadingTodoId, setUploadingTodoId] = useState<string | null>(null);
+  const [categoryStats, setCategoryStats] = useState<{ name: string; count: number }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch todos with relations (paginated - 5 items at a time)
+  // Fetch todos with relations using fluent API
+  // Types are automatically inferred from .include() calls
   const {
     items: todos,
     status,
@@ -74,9 +76,11 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
     totalCount,
     isLoadingMore,
     loadMore,
-  } = useLiveList<TodoWithRelations>(
-    '/api/todos',
-    { orderBy: 'position', include: 'category,image,tags', limit: 5 }
+  } = useLiveList(
+    client.resources.todos
+      .orderBy('position')
+      .include('category', 'image', 'tags')
+      .limit(5)
   );
 
   // File upload hook
@@ -84,19 +88,59 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
     resourcePath: '/api/files',
   });
 
-  // Fetch categories for the dropdown
-  const { items: categories, mutate: categoryMutate } = useLiveList<Category>(
-    '/api/categories',
-    { orderBy: 'name' }
+  // Fetch categories for the dropdown using fluent API
+  // Type is inferred automatically
+  const { items: categories, mutate: categoryMutate } = useLiveList(
+    client.resources.categories
+      .orderBy('name')
+      .select('id', 'name', 'color')
   );
 
+  // Fetch category stats using the type-safe query builder
+  // This demonstrates aggregations with groupBy
+  useEffect(() => {
+    const fetchCategoryStats = async () => {
+      try {
+        // Type-safe aggregation: groupBy categoryId and count
+        const result = await client.resources.todos
+          .query()
+          .filter('categoryId=isnull=false')
+          .groupBy('categoryId')
+          .withCount()
+          .aggregate();
+
+        // Map category IDs to names
+        const stats = result.groups
+          .map(group => {
+            const categoryId = (group.key as { categoryId: string })?.categoryId;
+            const category = categories.find(c => c.id === categoryId);
+            return {
+              name: category?.name || 'Unknown',
+              count: (group as { count?: number }).count || 0,
+            };
+          })
+          .filter(s => s.count > 0)
+          .sort((a, b) => b.count - a.count);
+
+        setCategoryStats(stats);
+      } catch (error) {
+        console.error('Failed to fetch category stats:', error);
+      }
+    };
+
+    if (categories.length > 0) {
+      fetchCategoryStats();
+    }
+  }, [categories, todos.length]); // Refetch when todos change
+
   // Search functionality using the useSearch hook
+  // Type is inferred from client.resources.todos
   const {
     items: searchResults,
     isSearching,
     search,
     clear: clearSearch,
-  } = useSearch<TodoWithRelations>('/api/todos', { enabled: searchEnabled });
+  } = useSearch(client.resources.todos, { enabled: searchEnabled });
 
   // Update search when query changes
   useEffect(() => {
@@ -108,7 +152,7 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
     mutate.create({
       title: newTodo.trim(),
       categoryId: selectedCategoryId,
-    } as Omit<Todo, 'id'>);
+    });
     setNewTodo('');
   };
 
@@ -117,7 +161,7 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
     categoryMutate.create({
       name: newCategoryName.trim(),
       color: newCategoryColor,
-    } as Omit<Category, 'id'>);
+    });
     setNewCategoryName('');
     setShowCategoryForm(false);
   };
@@ -190,9 +234,6 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
                             <span className={`todo-title${todo.completed ? ' completed' : ''}`}>
                               {todo.title}
                             </span>
-                            {todo.description && (
-                              <span className="todo-description">{todo.description}</span>
-                            )}
                           </div>
                           <button className="todo-delete" onClick={() => mutate.delete(todo.id)}>×</button>
                         </li>
@@ -411,6 +452,20 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
             {totalCount !== undefined && (
               <div><span>{todos.length}</span> of <span>{totalCount}</span> loaded</div>
             )}
+          </div>
+        )}
+        {/* Category stats from type-safe aggregation query */}
+        {categoryStats.length > 0 && (
+          <div className="category-stats">
+            <div className="category-stats-title">Todos by Category</div>
+            <div className="category-stats-list">
+              {categoryStats.map((stat, i) => (
+                <div key={i} className="category-stat-item">
+                  <span className="category-stat-name">{stat.name}</span>
+                  <span className="category-stat-count">{stat.count}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
         <div className="connection-status">

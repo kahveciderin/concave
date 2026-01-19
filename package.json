@@ -62,6 +62,10 @@
     "./middleware/logging": {
       "types": "./dist/middleware/logging.d.ts",
       "import": "./dist/middleware/logging.js"
+    },
+    "./env": {
+      "types": "./dist/env/index.d.ts",
+      "import": "./dist/env/index.js"
     }
   },
   "files": [
@@ -80,7 +84,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "example:dev": "pnpm build && pnpm example:frontend:build && tsx watch --tsconfig example/tsconfig.json example/src/main.ts",
+    "example:dev": "pnpm build && (pnpm example:frontend:build || true) && tsx watch --tsconfig example/tsconfig.json example/src/main.ts",
+    "example:server": "pnpm build && tsx watch --tsconfig example/tsconfig.json example/src/main.ts",
     "example:start": "node example/dist/main.js",
     "example:build": "tsc -p example/tsconfig.json && tsc-alias -p example/tsconfig.json",
     "example:frontend:install": "cd example/frontend && pnpm install",

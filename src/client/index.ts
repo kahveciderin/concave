@@ -200,6 +200,23 @@ export {
 } from "./repository";
 
 export {
+  ResourceQueryBuilder,
+  createResourceQueryBuilder,
+} from "./resource-query-builder";
+
+export type {
+  NumericKeys,
+  StringKeys,
+  ComparableKeys,
+  DateKeys,
+  BooleanKeys,
+  TypedAggregationGroup,
+  TypedAggregationResponse,
+  TypedPaginatedResponse,
+  QueryBuilderState,
+} from "./query-types";
+
+export {
   OfflineManager,
   InMemoryOfflineStorage,
   LocalStorageOfflineStorage,

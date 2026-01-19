@@ -226,6 +226,13 @@ export const clearSchemaRegistry = (): void => {
   schemaRegistry.clear();
 };
 
+export interface RelationInfo {
+  name: string;
+  resource: string;
+  type: "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
+  nullable?: boolean;
+}
+
 export interface OpenAPIResource {
   name: string;
   path: string;
@@ -233,6 +240,7 @@ export interface OpenAPIResource {
   capabilities?: ResourceCapabilities;
   fields?: FieldPolicies;
   idField?: string;
+  relations?: RelationInfo[];
 }
 
 export const getResourcesForOpenAPI = (pathPrefix?: string): OpenAPIResource[] => {
@@ -242,6 +250,20 @@ export const getResourcesForOpenAPI = (pathPrefix?: string): OpenAPIResource[] =
     // Use captured mount path if available, otherwise fall back to prefix + name
     const path = entry.mountPath ?? (pathPrefix ? `${pathPrefix}/${entry.name}` : `/${entry.name}`);
 
+    // Extract relation info
+    const relations: RelationInfo[] | undefined = entry.config.relations
+      ? Object.entries(entry.config.relations).map(([name, rel]) => {
+          // Determine if nullable based on relation type
+          const isNullable = rel.type === "belongsTo" || rel.type === "hasOne";
+          return {
+            name,
+            resource: rel.resource,
+            type: rel.type,
+            nullable: isNullable,
+          };
+        })
+      : undefined;
+
     resources.push({
       name: entry.name,
       path,
@@ -249,6 +271,7 @@ export const getResourcesForOpenAPI = (pathPrefix?: string): OpenAPIResource[] =
       capabilities: entry.config.capabilities,
       fields: entry.config.fields,
       idField: entry.idColumn.name,
+      relations,
     });
   }
 

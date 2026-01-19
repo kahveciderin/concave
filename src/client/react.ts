@@ -1,16 +1,23 @@
 import { useSyncExternalStore, useRef, useEffect, useCallback, useState, useMemo } from "react";
-import type { ResourceClient, ConcaveClient, SearchOptions, SearchResponse } from "./types";
+import type { LiveListResourceClient, SearchableResourceClient, ConcaveClient, SearchResponse, SearchOptions, LiveQueryLike } from "./types";
 import { getClient, getAuthErrorHandler } from "./globals";
 import { createLiveQuery, LiveQuery, LiveQueryOptions, LiveQueryState, LiveQueryMutations, statusLabel } from "./live-store";
 
 export type LiveStatus = "loading" | "live" | "reconnecting" | "offline" | "error";
 
-export interface UseLiveListOptions extends LiveQueryOptions {
+export interface UseLiveListOptions<
+  T extends { id: string } = { id: string },
+  K extends keyof T & string = keyof T & string,
+> extends Omit<LiveQueryOptions, "select"> {
   enabled?: boolean;
+  select?: K[];
 }
 
-export interface UseLiveListResult<T extends { id: string }> {
-  items: T[];
+export interface UseLiveListResult<
+  T extends { id: string },
+  TItem = T,
+> {
+  items: TItem[];
   status: LiveStatus;
   statusLabel: string;
   error: Error | null;
@@ -35,9 +42,21 @@ export interface UseLiveListResult<T extends { id: string }> {
  * const { items, status, mutate } = useLiveList<Todo>('/api/todos', { orderBy: 'position' });
  *
  * @example
- * // Using ResourceClient directly
- * const todosRepo = client.resource<Todo>('/api/todos');
- * const { items, status, mutate } = useLiveList(todosRepo, { orderBy: 'position' });
+ * // Using typed resource client (type is inferred automatically)
+ * const { items, status, mutate } = useLiveList(client.resources.todos, { orderBy: 'position' });
+ * // items type is inferred as Todo[]
+ *
+ * @example
+ * // Using fluent LiveQuery with type-safe includes (recommended)
+ * const { items } = useLiveList(client.resources.todos.filter('completed==true').include('category', 'tags'));
+ * // items type: (todos & { category?: categories | null; tags?: tags[] })[]
+ *
+ * @example
+ * // With projections for type-safe field selection
+ * const { items } = useLiveList<User, 'id' | 'name' | 'avatar'>('/api/users', {
+ *   select: ['id', 'name', 'avatar'],
+ * });
+ * // items type: { id: string; name: string; avatar: string }[]
  */
 const EMPTY_STATE: LiveQueryState<never> = {
   items: [],
@@ -50,24 +69,104 @@ const EMPTY_STATE: LiveQueryState<never> = {
   isLoadingMore: false,
 };
 
-export function useLiveList<T extends { id: string }>(
-  pathOrRepo: string | ResourceClient<T>,
-  options: UseLiveListOptions = {}
-): UseLiveListResult<T> {
-  const { enabled = true, ...queryOptions } = options;
+// Type guard to check if input is a LiveQueryLike object
+function isLiveQueryLike<T extends { id: string }>(
+  input: unknown
+): input is LiveQueryLike<T> {
+  return (
+    input !== null &&
+    typeof input === "object" &&
+    "_path" in input &&
+    "_options" in input &&
+    typeof (input as LiveQueryLike<T>)._path === "string"
+  );
+}
+
+// Overload: Accept LiveQueryLike for fluent API with type-safe includes and select
+export function useLiveList<T extends { id: string }, Included = {}, Selected extends keyof T = keyof T>(
+  query: LiveQueryLike<T, Included, Selected>,
+  options?: Omit<UseLiveListOptions<T>, "filter" | "orderBy" | "limit" | "select" | "include">
+): UseLiveListResult<T, Pick<T, Selected> & Included>;
+
+// Overload: Accept path string or ResourceClient
+export function useLiveList<
+  T extends { id: string },
+  K extends keyof T & string = keyof T & string,
+>(
+  pathOrRepo: string | LiveListResourceClient<T>,
+  options?: UseLiveListOptions<T, K>
+): UseLiveListResult<T, Pick<T, K | "id">>;
+
+// Implementation
+export function useLiveList<
+  T extends { id: string },
+  K extends keyof T & string = keyof T & string,
+>(
+  pathOrRepoOrQuery: string | LiveListResourceClient<T> | LiveQueryLike<T>,
+  options?: UseLiveListOptions<T, K>
+): UseLiveListResult<T, Pick<T, K | "id">> {
+  // Handle LiveQueryLike input - extract path and options as stable primitives
+  const isLiveQuery = isLiveQueryLike(pathOrRepoOrQuery);
+  const liveQueryInput = isLiveQuery ? pathOrRepoOrQuery as LiveQueryLike<T> : null;
+
+  // Extract stable primitive values from LiveQuery to avoid reference instability
+  const lqPath = liveQueryInput?._path;
+  const lqFilter = liveQueryInput?._options.filter;
+  const lqOrderBy = liveQueryInput?._options.orderBy;
+  const lqLimit = liveQueryInput?._options.limit;
+  const lqSelect = liveQueryInput?._options.select;
+  const lqInclude = liveQueryInput?._options.include;
+  const lqSelectKey = lqSelect ? JSON.stringify(lqSelect) : undefined;
+
+  // Merge options from LiveQuery with passed options - use primitive dependencies
+  const mergedOptions = useMemo(() => {
+    if (isLiveQuery) {
+      return {
+        ...options,
+        filter: lqFilter ?? (options as UseLiveListOptions<T, K>)?.filter,
+        orderBy: lqOrderBy ?? (options as UseLiveListOptions<T, K>)?.orderBy,
+        limit: lqLimit ?? (options as UseLiveListOptions<T, K>)?.limit,
+        select: lqSelect ?? (options as UseLiveListOptions<T, K>)?.select,
+        include: lqInclude ?? (options as UseLiveListOptions<T, K>)?.include,
+      };
+    }
+    return options;
+  }, [isLiveQuery, lqFilter, lqOrderBy, lqLimit, lqSelectKey, lqInclude, options]);
+
+  const { enabled = true, select, ...queryOptions } = mergedOptions ?? {};
   const liveQueryRef = useRef<LiveQuery<T> | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
 
-  // Get client and repo
-  const client = typeof pathOrRepo === "string" ? getClient() : null;
-  const repo = useMemo(() => {
-    if (typeof pathOrRepo === "string") {
-      return getClient().resource<T>(pathOrRepo);
-    }
-    return pathOrRepo;
-  }, [pathOrRepo]);
+  // Get path for resource - use stable lqPath
+  const resourcePath = isLiveQuery ? lqPath : (typeof pathOrRepoOrQuery === "string" ? pathOrRepoOrQuery : null);
 
-  const optionsKey = JSON.stringify(queryOptions);
+  // Get client and repo - use stable dependencies only
+  // For LiveQuery: use lqPath (stable string)
+  // For string: use the string itself (stable)
+  // For ResourceClient: store in ref to maintain stability
+  const client = (isLiveQuery || typeof pathOrRepoOrQuery === "string") ? getClient() : null;
+  const isString = typeof pathOrRepoOrQuery === "string";
+  const stringPath = isString ? pathOrRepoOrQuery : null;
+
+  // Store ResourceClient in ref to avoid re-creating repo on every render
+  // This is needed because ResourceClient passed inline would be unstable
+  const resourceClientRef = useRef<LiveListResourceClient<T> | null>(null);
+  if (!isLiveQuery && !isString) {
+    resourceClientRef.current = pathOrRepoOrQuery as LiveListResourceClient<T>;
+  }
+
+  const repo = useMemo(() => {
+    if (isLiveQuery && lqPath) {
+      return getClient().resource<T>(lqPath);
+    }
+    if (stringPath) {
+      return getClient().resource<T>(stringPath);
+    }
+    // ResourceClient case - use ref for stability
+    return resourceClientRef.current;
+  }, [isLiveQuery, lqPath, stringPath]);
+
+  const optionsKey = JSON.stringify({ ...queryOptions, select });
 
   // Update pending count periodically
   useEffect(() => {
@@ -92,7 +191,12 @@ export function useLiveList<T extends { id: string }>(
 
     const authErrorHandler = getAuthErrorHandler();
 
-    liveQueryRef.current = createLiveQuery(repo, queryOptions, {
+    const liveQueryOptions = {
+      ...queryOptions,
+      select: select as string[] | undefined,
+    };
+
+    liveQueryRef.current = createLiveQuery(repo, liveQueryOptions, {
       onAuthError: authErrorHandler ?? undefined,
       getPendingCount: client ? () => client.getPendingCount() : undefined,
     });
@@ -345,7 +449,7 @@ export interface UseSearchResult<T> {
  * {items.map(item => <div key={item.id}>{item.title}</div>)}
  */
 export function useSearch<T extends { id: string }>(
-  pathOrRepo: string | ResourceClient<T>,
+  pathOrRepo: string | SearchableResourceClient<T>,
   options: UseSearchOptions = {}
 ): UseSearchResult<T> {
   const { debounceMs = 300, enabled = true, ...searchOptions } = options;

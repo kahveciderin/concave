@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import { getGlobalSearch, hasGlobalSearch, SearchConfig } from "@/search";
 import { ValidationError, SearchError } from "./error";
+import { ScopeResolver, combineScopes } from "@/auth/scope";
+import { UserContext } from "./types";
 
 const ISO_DATE_REGEX =
   /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?)?$/;
@@ -211,10 +213,19 @@ const executeFilter = (
   return true;
 };
 
+export interface SearchHandlerOptions {
+  scopeResolver: ScopeResolver;
+  getUser: (req: Request) => UserContext | null;
+  filterer: {
+    execute: (expr: string, obj: Record<string, unknown>) => boolean;
+  };
+}
+
 export const createSearchHandler = (
   config: SearchConfig,
   tableName: string,
-  _primaryKeyName: string
+  _primaryKeyName: string,
+  options?: SearchHandlerOptions
 ) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     if (!hasGlobalSearch()) {
@@ -226,6 +237,17 @@ export const createSearchHandler = (
 
     if (!query) {
       return next(new ValidationError("Missing query parameter 'q'"));
+    }
+
+    let authScope: string | null = null;
+    if (options) {
+      try {
+        const user = options.getUser(req);
+        const scope = await options.scopeResolver.resolve("read", user);
+        authScope = scope.toString();
+      } catch (err) {
+        return next(err);
+      }
     }
 
     const indexName = config.indexName ?? tableName;
@@ -261,9 +283,21 @@ export const createSearchHandler = (
       });
 
       let items = result.hits.map((hit) => hit.source);
+      const userFilter = req.query.filter as string | undefined;
 
-      if (req.query.filter) {
-        const filter = parseSimpleFilter(req.query.filter as string);
+      if (options && authScope && authScope !== "*") {
+        const combinedFilter = combineScopes(
+          { toString: () => authScope!, isEmpty: () => authScope === "" },
+          userFilter
+        );
+
+        if (combinedFilter) {
+          items = items.filter((item) =>
+            options.filterer.execute(combinedFilter, item as Record<string, unknown>)
+          );
+        }
+      } else if (userFilter) {
+        const filter = parseSimpleFilter(userFilter);
         if (filter) {
           items = items.filter((item) =>
             executeFilter(filter, item as Record<string, unknown>)
@@ -271,18 +305,19 @@ export const createSearchHandler = (
         }
       }
 
+      const itemIds = new Set(items.map((item) => String((item as Record<string, unknown>).id)));
       const highlights =
         req.query.highlight === "true"
           ? Object.fromEntries(
               result.hits
-                .filter((h) => h.highlights)
+                .filter((h) => h.highlights && itemIds.has(String(h.id)))
                 .map((h) => [h.id, h.highlights])
             )
           : undefined;
 
       res.json({
         items,
-        total: result.total,
+        total: items.length,
         ...(highlights && Object.keys(highlights).length > 0 && { highlights }),
       });
     } catch (err) {

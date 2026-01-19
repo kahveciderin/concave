@@ -140,6 +140,41 @@ const typeInfoToDart = (typeInfo: TypeInfo): string => {
   return "dynamic";
 };
 
+const isNumericType = (typeInfo: TypeInfo): boolean => {
+  if (typeInfo.kind === "primitive") {
+    return typeInfo.primitive === "integer" || typeInfo.primitive === "number";
+  }
+  return false;
+};
+
+const isStringType = (typeInfo: TypeInfo): boolean => {
+  if (typeInfo.kind === "primitive") {
+    return (
+      typeInfo.primitive === "string" ||
+      typeInfo.primitive === "uuid" ||
+      typeInfo.primitive === "datetime" ||
+      typeInfo.primitive === "date" ||
+      typeInfo.primitive === "time"
+    );
+  }
+  return false;
+};
+
+const isComparableType = (typeInfo: TypeInfo): boolean => {
+  if (typeInfo.kind === "primitive") {
+    return (
+      typeInfo.primitive === "integer" ||
+      typeInfo.primitive === "number" ||
+      typeInfo.primitive === "string" ||
+      typeInfo.primitive === "uuid" ||
+      typeInfo.primitive === "datetime" ||
+      typeInfo.primitive === "date" ||
+      typeInfo.primitive === "time"
+    );
+  }
+  return false;
+};
+
 const generateTypeScript = (
   schema: ConcaveSchema,
   options: TypegenOptions,
@@ -150,11 +185,28 @@ const generateTypeScript = (
   output += `// Server: ${options.serverUrl}\n`;
   output += `// Generated at: ${schema.timestamp}\n\n`;
 
+  // Import types from the library - this is critical for type inference to work
+  if (options.includeClient !== false) {
+    output += `import type { ResourceClient, ConcaveClient } from "concave/client";\n\n`;
+  }
+
   if (ns) {
     output += `export namespace ${ns} {\n`;
   }
 
   const indent = ns ? "  " : "";
+
+  // Build a map of resource paths to names for relation type lookup
+  const resourceNameByPath = new Map<string, string>();
+  for (const resource of schema.resources) {
+    // Map both the path (e.g., "/categories") and the resource name (e.g., "categories")
+    resourceNameByPath.set(resource.path, resource.name);
+    resourceNameByPath.set(resource.name.toLowerCase(), resource.name);
+    // Also map without leading slash
+    if (resource.path.startsWith("/")) {
+      resourceNameByPath.set(resource.path.slice(1), resource.name);
+    }
+  }
 
   for (const resource of schema.resources) {
     output += `${indent}export interface ${resource.name} {\n`;
@@ -172,6 +224,68 @@ const generateTypeScript = (
     const omitType = autoFields ? `Omit<${resource.name}, ${autoFields}>` : resource.name;
     output += `${indent}export type ${resource.name}Input = ${omitType};\n`;
     output += `${indent}export type ${resource.name}Update = Partial<${resource.name}Input>;\n\n`;
+
+    // Generate field metadata types for type-safe queries
+    const allFields = resource.fields.map(f => `"${f.name}"`).join(" | ");
+    output += `${indent}export type ${resource.name}Fields = ${allFields || "never"};\n`;
+
+    const numericFields = resource.fields
+      .filter(f => isNumericType(f.type))
+      .map(f => `"${f.name}"`)
+      .join(" | ");
+    output += `${indent}export type ${resource.name}NumericFields = ${numericFields || "never"};\n`;
+
+    const comparableFields = resource.fields
+      .filter(f => isComparableType(f.type))
+      .map(f => `"${f.name}"`)
+      .join(" | ");
+    output += `${indent}export type ${resource.name}ComparableFields = ${comparableFields || "never"};\n`;
+
+    const stringFields = resource.fields
+      .filter(f => isStringType(f.type))
+      .map(f => `"${f.name}"`)
+      .join(" | ");
+    output += `${indent}export type ${resource.name}StringFields = ${stringFields || "never"};\n\n`;
+
+    // Generate Relations type and WithRelations type if the resource has relations
+    if (resource.relations && resource.relations.length > 0) {
+      // Generate Relations interface - maps relation names to their types
+      output += `${indent}export interface ${resource.name}Relations {\n`;
+      for (const relation of resource.relations) {
+        const relatedTypeName = resourceNameByPath.get(relation.resource) ??
+          resourceNameByPath.get(relation.resource.toLowerCase()) ??
+          relation.resource;
+
+        if (relation.type === "hasMany" || relation.type === "manyToMany") {
+          output += `${indent}  ${relation.name}: ${relatedTypeName}[];\n`;
+        } else {
+          output += `${indent}  ${relation.name}: ${relatedTypeName} | null;\n`;
+        }
+      }
+      output += `${indent}}\n\n`;
+
+      // Generate relation names type for type-safe include()
+      const relationNames = resource.relations.map(r => `"${r.name}"`).join(" | ");
+      output += `${indent}export type ${resource.name}RelationNames = ${relationNames};\n\n`;
+
+      // Generate WithRelations type (all relations included)
+      output += `${indent}export interface ${resource.name}WithRelations extends ${resource.name} {\n`;
+      for (const relation of resource.relations) {
+        const relatedTypeName = resourceNameByPath.get(relation.resource) ??
+          resourceNameByPath.get(relation.resource.toLowerCase()) ??
+          relation.resource;
+
+        if (relation.type === "hasMany" || relation.type === "manyToMany") {
+          output += `${indent}  ${relation.name}?: ${relatedTypeName}[];\n`;
+        } else {
+          output += `${indent}  ${relation.name}?: ${relatedTypeName} | null;\n`;
+        }
+      }
+      output += `${indent}}\n\n`;
+
+      // Generate helper type to pick specific relations
+      output += `${indent}export type ${resource.name}With<K extends keyof ${resource.name}Relations> = ${resource.name} & { [P in K]?: ${resource.name}Relations[P] };\n\n`;
+    }
   }
 
   if (options.includeClient !== false) {
@@ -202,91 +316,156 @@ const generateTypeScript = (
 const generateTSClientTypes = (schema: ConcaveSchema, indent: string): string => {
   let output = "";
 
-  output += `${indent}export interface ConcaveClient {\n`;
+  // Generate path constants
+  output += `${indent}// Resource path constants\n`;
+  output += `${indent}export const ResourcePaths = {\n`;
   for (const resource of schema.resources) {
     const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
-    output += `${indent}  ${lowerName}: ResourceClient<${resource.name}>;\n`;
+    output += `${indent}  ${lowerName}: "/api${resource.path}" as const,\n`;
+  }
+  output += `${indent}} as const;\n\n`;
+
+  // Generate LiveQuery interface for fluent API with type-safe includes and select
+  output += `${indent}// LiveQuery - fluent query builder that can be passed to useLiveList\n`;
+  output += `${indent}// Tracks included relations AND selected fields at the type level for automatic type inference\n`;
+  output += `${indent}// Also provides access to the underlying ResourceClient for direct operations\n`;
+  output += `${indent}export interface LiveQuery<T extends { id: string }, Relations = {}, Included = {}, Selected extends keyof T = keyof T> {\n`;
+  output += `${indent}  readonly _type: T;\n`;
+  output += `${indent}  readonly _relations: Relations;\n`;
+  output += `${indent}  readonly _included: Included;\n`;
+  output += `${indent}  readonly _selected: Selected;\n`;
+  output += `${indent}  readonly _path: string;\n`;
+  output += `${indent}  readonly _options: LiveQueryOptions;\n`;
+  output += `${indent}  readonly _client: ResourceClient<T>;\n`;
+  output += `${indent}  // Fluent query methods\n`;
+  output += `${indent}  filter(filter: string): LiveQuery<T, Relations, Included, Selected>;\n`;
+  output += `${indent}  where(filter: string): LiveQuery<T, Relations, Included, Selected>;\n`;
+  output += `${indent}  orderBy(orderBy: string): LiveQuery<T, Relations, Included, Selected>;\n`;
+  output += `${indent}  limit(limit: number): LiveQuery<T, Relations, Included, Selected>;\n`;
+  output += `${indent}  select<K extends keyof T>(...fields: K[]): LiveQuery<T, Relations, Included, K | 'id'>;\n`;
+  output += `${indent}  include<K extends keyof Relations>(...relations: K[]): LiveQuery<T, Relations, Included & Pick<Relations, K>, Selected>;\n`;
+  output += `${indent}  // ResourceClient methods for direct operations\n`;
+  output += `${indent}  query(): ReturnType<ResourceClient<T>["query"]>;\n`;
+  output += `${indent}  list(options?: Parameters<ResourceClient<T>["list"]>[0]): ReturnType<ResourceClient<T>["list"]>;\n`;
+  output += `${indent}  get(id: string, options?: Parameters<ResourceClient<T>["get"]>[1]): ReturnType<ResourceClient<T>["get"]>;\n`;
+  output += `${indent}  search(query: string, options?: Parameters<ResourceClient<T>["search"]>[1]): ReturnType<ResourceClient<T>["search"]>;\n`;
+  output += `${indent}  create(data: Parameters<ResourceClient<T>["create"]>[0], options?: Parameters<ResourceClient<T>["create"]>[1]): ReturnType<ResourceClient<T>["create"]>;\n`;
+  output += `${indent}  update(id: string, data: Parameters<ResourceClient<T>["update"]>[1], options?: Parameters<ResourceClient<T>["update"]>[2]): ReturnType<ResourceClient<T>["update"]>;\n`;
+  output += `${indent}  delete(id: string, options?: Parameters<ResourceClient<T>["delete"]>[1]): ReturnType<ResourceClient<T>["delete"]>;\n`;
+  output += `${indent}  subscribe(options?: Parameters<ResourceClient<T>["subscribe"]>[0], callbacks?: Parameters<ResourceClient<T>["subscribe"]>[1]): ReturnType<ResourceClient<T>["subscribe"]>;\n`;
+  output += `${indent}}\n\n`;
+
+  output += `${indent}export interface LiveQueryOptions {\n`;
+  output += `${indent}  filter?: string;\n`;
+  output += `${indent}  orderBy?: string;\n`;
+  output += `${indent}  limit?: number;\n`;
+  output += `${indent}  select?: string[];\n`;
+  output += `${indent}  include?: string;\n`;
+  output += `${indent}}\n\n`;
+
+  // Generate typed resources interface with LiveQuery support
+  output += `${indent}// Typed resources accessor with fluent query builder\n`;
+  output += `${indent}// Each resource returns a LiveQuery that can be chained and passed to useLiveList\n`;
+  output += `${indent}export interface TypedResources {\n`;
+  for (const resource of schema.resources) {
+    const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
+    const hasRelations = resource.relations && resource.relations.length > 0;
+    const relationsType = hasRelations ? `${resource.name}Relations` : "{}";
+    output += `${indent}  ${lowerName}: LiveQuery<${resource.name}, ${relationsType}>;\n`;
   }
   output += `${indent}}\n\n`;
 
-  output += `${indent}export interface ResourceClient<T> {\n`;
-  output += `${indent}  list(options?: ListOptions): Promise<PaginatedResponse<T>>;\n`;
-  output += `${indent}  get(id: string | number, options?: GetOptions): Promise<T>;\n`;
-  output += `${indent}  count(filter?: string): Promise<number>;\n`;
-  output += `${indent}  aggregate(options: AggregateOptions): Promise<AggregationResponse>;\n`;
-  output += `${indent}  create(data: Partial<T>, options?: CreateOptions): Promise<T>;\n`;
-  output += `${indent}  update(id: string | number, data: Partial<T>, options?: UpdateOptions): Promise<T>;\n`;
-  output += `${indent}  delete(id: string | number): Promise<void>;\n`;
-  output += `${indent}  subscribe(options?: SubscribeOptions, callbacks?: SubscriptionCallbacks<T>): Subscription<T>;\n`;
-  output += `${indent}  rpc<TInput, TOutput>(name: string, input: TInput): Promise<TOutput>;\n`;
+  // Generate typed client interface extending ConcaveClient
+  output += `${indent}// Typed client with resources accessor\n`;
+  output += `${indent}export interface TypedConcaveClient extends ConcaveClient {\n`;
+  output += `${indent}  resources: TypedResources;\n`;
   output += `${indent}}\n\n`;
 
-  output += `${indent}export interface ListOptions {\n`;
-  output += `${indent}  filter?: string;\n`;
-  output += `${indent}  select?: string[];\n`;
-  output += `${indent}  cursor?: string;\n`;
-  output += `${indent}  limit?: number;\n`;
-  output += `${indent}  orderBy?: string;\n`;
-  output += `${indent}  totalCount?: boolean;\n`;
+  // Generate createTypedClient factory function
+  output += `${indent}// ============================================================\n`;
+  output += `${indent}// Typed Client Factory\n`;
+  output += `${indent}// ============================================================\n`;
+  output += `${indent}//\n`;
+  output += `${indent}// Usage:\n`;
+  output += `${indent}//   import { getOrCreateClient } from "concave/client";\n`;
+  output += `${indent}//   import { createTypedClient } from "./api-types";\n`;
+  output += `${indent}//\n`;
+  output += `${indent}//   const client = createTypedClient(getOrCreateClient({ baseUrl: location.origin }));\n`;
+  output += `${indent}//\n`;
+  output += `${indent}//   // Now use typed resources - types are inferred automatically:\n`;
+
+  for (const resource of schema.resources) {
+    const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
+    output += `${indent}//   const { items } = useLiveList(client.resources.${lowerName});  // items: ${resource.name}[]\n`;
+  }
+
+  output += `${indent}//\n`;
+  output += `${indent}// LiveQuery implementation - fluent query builder with type tracking\n`;
+  output += `${indent}// Also proxies ResourceClient methods for direct operations\n`;
+  output += `${indent}function createLiveQuery<T extends { id: string }, Relations = {}, Included = {}, Selected extends keyof T = keyof T>(\n`;
+  output += `${indent}  baseClient: ConcaveClient,\n`;
+  output += `${indent}  path: string,\n`;
+  output += `${indent}  options: LiveQueryOptions = {}\n`;
+  output += `${indent}): LiveQuery<T, Relations, Included, Selected> {\n`;
+  output += `${indent}  const resourceClient = baseClient.resource<T>(path);\n`;
+  output += `${indent}  const query: LiveQuery<T, Relations, Included, Selected> = {\n`;
+  output += `${indent}    _type: null as unknown as T,\n`;
+  output += `${indent}    _relations: null as unknown as Relations,\n`;
+  output += `${indent}    _included: null as unknown as Included,\n`;
+  output += `${indent}    _selected: null as unknown as Selected,\n`;
+  output += `${indent}    _path: path,\n`;
+  output += `${indent}    _options: options,\n`;
+  output += `${indent}    _client: resourceClient,\n`;
+  output += `${indent}    // Fluent query methods\n`;
+  output += `${indent}    filter(filter: string) {\n`;
+  output += `${indent}      const combined = options.filter ? \`(\${options.filter});(\${filter})\` : filter;\n`;
+  output += `${indent}      return createLiveQuery<T, Relations, Included, Selected>(baseClient, path, { ...options, filter: combined });\n`;
+  output += `${indent}    },\n`;
+  output += `${indent}    where(filter: string) {\n`;
+  output += `${indent}      return this.filter(filter);\n`;
+  output += `${indent}    },\n`;
+  output += `${indent}    orderBy(orderBy: string) {\n`;
+  output += `${indent}      return createLiveQuery<T, Relations, Included, Selected>(baseClient, path, { ...options, orderBy });\n`;
+  output += `${indent}    },\n`;
+  output += `${indent}    limit(limit: number) {\n`;
+  output += `${indent}      return createLiveQuery<T, Relations, Included, Selected>(baseClient, path, { ...options, limit });\n`;
+  output += `${indent}    },\n`;
+  output += `${indent}    select<K extends keyof T>(...fields: K[]) {\n`;
+  output += `${indent}      return createLiveQuery<T, Relations, Included, K | 'id'>(baseClient, path, { ...options, select: fields as string[] }) as LiveQuery<T, Relations, Included, K | 'id'>;\n`;
+  output += `${indent}    },\n`;
+  output += `${indent}    include<K extends keyof Relations>(...relations: K[]) {\n`;
+  output += `${indent}      const includeStr = options.include\n`;
+  output += `${indent}        ? \`\${options.include},\${relations.join(',')}\`\n`;
+  output += `${indent}        : relations.join(',');\n`;
+  output += `${indent}      return createLiveQuery<T, Relations, Included & Pick<Relations, K>, Selected>(baseClient, path, { ...options, include: includeStr });\n`;
+  output += `${indent}    },\n`;
+  output += `${indent}    // Proxied ResourceClient methods\n`;
+  output += `${indent}    query() { return resourceClient.query(); },\n`;
+  output += `${indent}    list(opts) { return resourceClient.list(opts); },\n`;
+  output += `${indent}    get(id, opts) { return resourceClient.get(id, opts); },\n`;
+  output += `${indent}    search(q, opts) { return resourceClient.search(q, opts); },\n`;
+  output += `${indent}    create(data, opts) { return resourceClient.create(data, opts); },\n`;
+  output += `${indent}    update(id, data, opts) { return resourceClient.update(id, data, opts); },\n`;
+  output += `${indent}    delete(id, opts) { return resourceClient.delete(id, opts); },\n`;
+  output += `${indent}    subscribe(opts, cbs) { return resourceClient.subscribe(opts, cbs); },\n`;
+  output += `${indent}  };\n`;
+  output += `${indent}  return query;\n`;
   output += `${indent}}\n\n`;
 
-  output += `${indent}export interface GetOptions {\n`;
-  output += `${indent}  select?: string[];\n`;
-  output += `${indent}}\n\n`;
+  output += `${indent}export function createTypedClient(baseClient: ConcaveClient): TypedConcaveClient {\n`;
+  output += `${indent}  return {\n`;
+  output += `${indent}    ...baseClient,\n`;
+  output += `${indent}    resources: {\n`;
 
-  output += `${indent}export interface CreateOptions {\n`;
-  output += `${indent}  idempotencyKey?: string;\n`;
-  output += `${indent}}\n\n`;
+  for (const resource of schema.resources) {
+    const lowerName = resource.name.charAt(0).toLowerCase() + resource.name.slice(1);
+    const hasRelations = resource.relations && resource.relations.length > 0;
+    const relationsType = hasRelations ? `${resource.name}Relations` : "{}";
+    output += `${indent}      ${lowerName}: createLiveQuery<${resource.name}, ${relationsType}>(baseClient, ResourcePaths.${lowerName}),\n`;
+  }
 
-  output += `${indent}export interface UpdateOptions {\n`;
-  output += `${indent}  ifMatch?: string;\n`;
-  output += `${indent}}\n\n`;
-
-  output += `${indent}export interface SubscribeOptions {\n`;
-  output += `${indent}  filter?: string;\n`;
-  output += `${indent}  resumeFrom?: number;\n`;
-  output += `${indent}}\n\n`;
-
-  output += `${indent}export interface AggregateOptions {\n`;
-  output += `${indent}  filter?: string;\n`;
-  output += `${indent}  groupBy?: string[];\n`;
-  output += `${indent}  count?: boolean;\n`;
-  output += `${indent}  sum?: string[];\n`;
-  output += `${indent}  avg?: string[];\n`;
-  output += `${indent}  min?: string[];\n`;
-  output += `${indent}  max?: string[];\n`;
-  output += `${indent}}\n\n`;
-
-  output += `${indent}export interface PaginatedResponse<T> {\n`;
-  output += `${indent}  items: T[];\n`;
-  output += `${indent}  nextCursor: string | null;\n`;
-  output += `${indent}  hasMore: boolean;\n`;
-  output += `${indent}  totalCount?: number;\n`;
-  output += `${indent}}\n\n`;
-
-  output += `${indent}export interface AggregationResponse {\n`;
-  output += `${indent}  groups: Array<{\n`;
-  output += `${indent}    key: Record<string, unknown> | null;\n`;
-  output += `${indent}    count?: number;\n`;
-  output += `${indent}    sum?: Record<string, number>;\n`;
-  output += `${indent}    avg?: Record<string, number>;\n`;
-  output += `${indent}    min?: Record<string, number | string>;\n`;
-  output += `${indent}    max?: Record<string, number | string>;\n`;
-  output += `${indent}  }>;\n`;
-  output += `${indent}}\n\n`;
-
-  output += `${indent}export interface Subscription<T> {\n`;
-  output += `${indent}  readonly items: T[];\n`;
-  output += `${indent}  unsubscribe(): void;\n`;
-  output += `${indent}  reconnect(): void;\n`;
-  output += `${indent}}\n\n`;
-
-  output += `${indent}export interface SubscriptionCallbacks<T> {\n`;
-  output += `${indent}  onAdded?: (item: T) => void;\n`;
-  output += `${indent}  onChanged?: (item: T, previousId?: string) => void;\n`;
-  output += `${indent}  onRemoved?: (id: string) => void;\n`;
-  output += `${indent}  onInvalidate?: (reason?: string) => void;\n`;
-  output += `${indent}  onError?: (error: Error) => void;\n`;
+  output += `${indent}    },\n`;
+  output += `${indent}  } as TypedConcaveClient;\n`;
   output += `${indent}}\n`;
 
   return output;

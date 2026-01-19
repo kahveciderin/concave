@@ -1,4 +1,4 @@
-import type { ResourceClient, SubscriptionCallbacks, Subscription, ListOptions, SubscribeOptions, EventMeta } from "./types";
+import type { LiveListResourceClient, SubscriptionCallbacks, Subscription, EventMeta, ListOptions, SubscribeOptions } from "./types";
 
 export type LiveQueryStatus = "loading" | "live" | "reconnecting" | "offline" | "error";
 
@@ -16,7 +16,7 @@ export interface LiveQueryState<T> {
 }
 
 export interface LiveQueryMutations<T extends { id: string }> {
-  create: (data: Omit<T, "id">) => string;
+  create: (data: Partial<Omit<T, "id">>) => string;
   update: (id: string, data: Partial<T>) => void;
   delete: (id: string) => void;
 }
@@ -36,6 +36,7 @@ export interface LiveQueryOptions {
   orderBy?: string;
   limit?: number;
   subscriptionMode?: SubscriptionMode;
+  select?: string[];
 }
 
 type SortFn<T> = (a: T, b: T) => number;
@@ -65,7 +66,7 @@ const createSortFn = <T>(orderBy?: string): SortFn<T> | null => {
 };
 
 export const createLiveQuery = <T extends { id: string }>(
-  repo: ResourceClient<T>,
+  repo: LiveListResourceClient<T>,
   options: LiveQueryOptions = {},
   callbacks?: {
     onAuthError?: () => void;
@@ -465,6 +466,7 @@ export const createLiveQuery = <T extends { id: string }>(
       if (options.include) listOptions.include = options.include;
       if (options.orderBy) listOptions.orderBy = options.orderBy;
       if (options.limit) listOptions.limit = options.limit;
+      if (options.select) listOptions.select = options.select;
 
       const result = await repo.list(listOptions);
 
@@ -603,6 +605,7 @@ export const createLiveQuery = <T extends { id: string }>(
       if (options.include) listOptions.include = options.include;
       if (options.orderBy) listOptions.orderBy = options.orderBy;
       if (options.limit) listOptions.limit = options.limit;
+      if (options.select) listOptions.select = options.select;
 
       const result = await repo.list(listOptions);
 

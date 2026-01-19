@@ -85,6 +85,13 @@ export interface SecurityScheme {
   bearerFormat?: string;
 }
 
+export interface RelationInfo {
+  name: string;
+  resource: string;
+  type: "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
+  nullable?: boolean;
+}
+
 export interface RegisteredResource {
   name: string;
   path: string;
@@ -93,6 +100,7 @@ export interface RegisteredResource {
   fields?: FieldPolicies;
   procedures?: Record<string, ProcedureDefinition>;
   idField?: string;
+  relations?: RelationInfo[];
 }
 
 export interface OpenAPIConfig {

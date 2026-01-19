@@ -280,6 +280,195 @@ const result = await todos.rpc<
 >("archive", { ids: ["1", "2", "3"] });
 ```
 
+## Type-Safe Query Builder
+
+The `query()` method returns a fluent, chainable query builder with full TypeScript type inference. Types are automatically narrowed based on selected fields.
+
+### Basic Projections
+
+```typescript
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  age: number;
+  avatar: string;
+  role: 'admin' | 'user';
+}
+
+const users = client.resource<User>('/api/users');
+
+// Returns Pick<User, 'id' | 'name'>[]
+const { items } = await users
+  .query()
+  .select('id', 'name')
+  .list();
+
+// TypeScript knows items have only id and name
+items[0].id;    // ✓ OK
+items[0].name;  // ✓ OK
+items[0].email; // ✗ Type error - not selected
+```
+
+### Filtered Queries
+
+```typescript
+// Combine select with filters and sorting
+const activeUsers = await users
+  .query()
+  .select('id', 'name', 'email')
+  .filter('age>=18')
+  .filter('role=="user"')  // Filters are AND-ed together
+  .orderBy('name:asc')
+  .limit(10)
+  .list();
+```
+
+### Single Item Operations
+
+```typescript
+// Get single with projection
+const user = await users
+  .query()
+  .select('id', 'name')
+  .get('user-123');
+// Type: { id: string; name: string }
+
+// Get first matching item (or null)
+const newest = await users
+  .query()
+  .select('id', 'name', 'email')
+  .orderBy('createdAt:desc')
+  .first();
+// Type: { id: string; name: string; email: string } | null
+```
+
+### Counting
+
+```typescript
+// Count with filter
+const adultCount = await users
+  .query()
+  .filter('age>=18')
+  .count();
+// Type: number
+```
+
+### Type-Safe Aggregations
+
+The query builder provides fully typed aggregation results:
+
+```typescript
+// Group by with count
+const roleStats = await users
+  .query()
+  .groupBy('role')
+  .withCount()
+  .aggregate();
+// Type: { groups: { key: { role: string }; count: number }[] }
+
+// Multiple aggregation functions
+const stats = await users
+  .query()
+  .groupBy('role')
+  .withCount()
+  .avg('age')      // Only numeric fields allowed
+  .sum('score')    // Only numeric fields allowed
+  .min('name')     // Comparable fields (string, number, date)
+  .max('createdAt')
+  .aggregate();
+// Type includes: key, count, avg: { age: number }, sum: { score: number }, min: { name: string }, max: { createdAt: string }
+
+// Filtered aggregation
+const activeStats = await users
+  .query()
+  .filter('status=="active"')
+  .groupBy('department')
+  .withCount()
+  .avg('salary')
+  .aggregate();
+```
+
+### Immutable Chaining
+
+The query builder is immutable - each method returns a new builder:
+
+```typescript
+const baseQuery = users.query().filter('age>=18');
+
+// These create separate queries
+const admins = baseQuery.filter('role=="admin"');
+const regularUsers = baseQuery.filter('role=="user"');
+
+// Original baseQuery is unchanged
+```
+
+### With React Hooks
+
+Use projections with `useLiveList` for type-safe real-time lists:
+
+```typescript
+import { useLiveList } from "@kahveciderin/concave/client/react";
+
+function UserList() {
+  // Type parameter specifies selected fields
+  const { items, status, mutate } = useLiveList<User, 'id' | 'name' | 'avatar'>(
+    '/api/users',
+    { select: ['id', 'name', 'avatar'] }
+  );
+  // items type: { id: string; name: string; avatar: string }[]
+
+  return (
+    <ul>
+      {items.map(user => (
+        <li key={user.id}>
+          <img src={user.avatar} alt={user.name} />
+          {user.name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+### Query Builder Methods
+
+| Method | Description |
+|--------|-------------|
+| `select(...fields)` | Select specific fields (narrows return type) |
+| `filter(filter)` | Add filter condition (AND with previous) |
+| `where(filter)` | Alias for `filter()` |
+| `orderBy(orderBy)` | Set sort order |
+| `limit(n)` | Limit results |
+| `cursor(cursor)` | Set pagination cursor |
+| `include(include)` | Include relations |
+| `withTotalCount()` | Request total count in response |
+| `groupBy(...fields)` | Group by fields for aggregation |
+| `withCount()` | Include count in aggregation |
+| `sum(...fields)` | Sum numeric fields |
+| `avg(...fields)` | Average numeric fields |
+| `min(...fields)` | Minimum of comparable fields |
+| `max(...fields)` | Maximum of comparable fields |
+| `list()` | Execute and return paginated response |
+| `get(id)` | Get single item by ID |
+| `first()` | Get first item or null |
+| `count()` | Get count of matching items |
+| `aggregate()` | Execute aggregation query |
+
+### Generated Field Metadata Types
+
+When using the type generator (`pnpm example:typegen`), field metadata types are automatically generated:
+
+```typescript
+// Generated types
+export type UserFields = 'id' | 'name' | 'email' | 'age' | 'role';
+export type UserNumericFields = 'age' | 'score';
+export type UserComparableFields = 'id' | 'name' | 'email' | 'age' | 'createdAt';
+export type UserStringFields = 'id' | 'name' | 'email' | 'role';
+```
+
+These can be used for type-safe field references in your application.
+
 ## React Hooks
 
 ### useLiveList
@@ -614,6 +803,106 @@ main();
 npx concave typegen --server http://localhost:3000 --output ./src/generated/api-types.ts
 ```
 
+### Generated Types
+
+The typegen generates several useful types:
+
+```typescript
+// Generated api-types.ts includes:
+
+// Resource types
+export interface Todo { id: string; title: string; completed: boolean; ... }
+export interface User { id: string; name: string; email: string; ... }
+
+// Input/Update types
+export type TodoInput = Omit<Todo, 'id'>;
+export type TodoUpdate = Partial<TodoInput>;
+
+// Field metadata types (for type-safe queries)
+export type TodoFields = 'id' | 'title' | 'completed' | ...;
+export type TodoNumericFields = 'position';
+export type TodoStringFields = 'id' | 'title';
+
+// Path constants
+export const ResourcePaths = {
+  todo: '/api/todos',
+  user: '/api/users',
+} as const;
+
+// Typed client factory
+export function createTypedClient(baseClient): TypedConcaveClient;
+```
+
+### Typed Client Factory
+
+The generated `createTypedClient` function creates a fully typed client with resource accessors:
+
+```typescript
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { createTypedClient } from "./generated/api-types";
+
+// Create base client
+const baseClient = getOrCreateClient({
+  baseUrl: location.origin,
+  credentials: "include",
+  offline: true,
+});
+
+// Wrap with typed client
+const client = createTypedClient(baseClient);
+
+// Now use typed resources - no type parameters needed!
+const todos = await client.resources.todos.list();  // todos: Todo[]
+const users = await client.resources.users.list();  // users: User[]
+
+// Type-safe query builder
+const result = await client.resources.todos
+  .query()
+  .select('id', 'title')
+  .filter('completed==false')
+  .list();
+// result.items type: { id: string; title: string }[]
+
+// Type-safe aggregations
+const stats = await client.resources.users
+  .query()
+  .groupBy('role')
+  .withCount()
+  .avg('age')
+  .aggregate();
+```
+
+### Using with React Hooks
+
+The typed resources work seamlessly with `useLiveList`:
+
+```typescript
+import { useLiveList } from "@kahveciderin/concave/client/react";
+import { createTypedClient } from "./generated/api-types";
+
+const client = createTypedClient(getOrCreateClient({ baseUrl: location.origin }));
+
+function TodoList() {
+  // Type is automatically inferred from client.resources.todos
+  const { items, mutate } = useLiveList(
+    client.resources.todos,
+    { orderBy: 'position' }
+  );
+  // items type: Todo[]
+
+  return (
+    <ul>
+      {items.map(todo => (
+        <li key={todo.id}>
+          {todo.title}
+          <button onClick={() => mutate.delete(todo.id)}>Delete</button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
 ## Error Handling
 
 ```typescript
@@ -773,13 +1062,14 @@ interface LiveQueryState<T> {
 }
 
 // useLiveList options
-interface UseLiveListOptions {
+interface UseLiveListOptions<T, K extends keyof T = keyof T> {
   filter?: string;
   orderBy?: string;
   limit?: number;
   include?: string;
   subscriptionMode?: "strict" | "sorted" | "append" | "prepend" | "live";
   enabled?: boolean;
+  select?: K[];  // Type-safe field selection
 }
 
 // useLiveList result
@@ -806,5 +1096,38 @@ interface LiveQueryMutations<T> {
   create: (data: Omit<T, "id">) => void;
   update: (id: string, data: Partial<T>) => void;
   delete: (id: string) => void;
+}
+
+// Query builder state
+interface QueryBuilderState<T> {
+  select?: (keyof T)[];
+  filter?: string;
+  orderBy?: string;
+  limit?: number;
+  cursor?: string;
+  include?: string;
+  totalCount?: boolean;
+  groupBy?: (keyof T)[];
+  count?: boolean;
+  sum?: (keyof T)[];
+  avg?: (keyof T)[];
+  min?: (keyof T)[];
+  max?: (keyof T)[];
+}
+
+// Utility types for type-safe queries
+type NumericKeys<T> = { [K in keyof T]: T[K] extends number | null ? K : never }[keyof T];
+type ComparableKeys<T> = { [K in keyof T]: T[K] extends number | string | Date | null ? K : never }[keyof T];
+
+// Typed aggregation response
+interface TypedAggregationResponse<T, GroupKeys, SumKeys, AvgKeys, MinKeys, MaxKeys, HasCount> {
+  groups: Array<{
+    key: GroupKeys extends never ? null : Pick<T, GroupKeys>;
+    count?: HasCount extends true ? number : never;
+    sum?: SumKeys extends never ? never : { [K in SumKeys]: number };
+    avg?: AvgKeys extends never ? never : { [K in AvgKeys]: number };
+    min?: MinKeys extends never ? never : { [K in MinKeys]: T[K] };
+    max?: MaxKeys extends never ? never : { [K in MaxKeys]: T[K] };
+  }>;
 }
 ```

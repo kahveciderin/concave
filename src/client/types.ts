@@ -1,3 +1,5 @@
+import type { ResourceQueryBuilder } from "./resource-query-builder";
+
 export type EventType = "added" | "existing" | "changed" | "removed" | "invalidate";
 
 export interface BaseEvent {
@@ -260,11 +262,11 @@ export interface ResourceClient<T extends { id: string }> {
   count(filter?: string): Promise<number>;
   aggregate(options: AggregateOptions): Promise<AggregationResponse>;
   search(query: string, options?: SearchOptions): Promise<SearchResponse<T>>;
-  create(data: Omit<T, "id">, options?: CreateOptions): Promise<T>;
+  create(data: Partial<Omit<T, "id">>, options?: CreateOptions): Promise<T>;
   update(id: string, data: Partial<T>, options?: UpdateOptions): Promise<T>;
   replace(id: string, data: Omit<T, "id">, options?: UpdateOptions): Promise<T>;
   delete(id: string, options?: DeleteOptions): Promise<void>;
-  batchCreate(items: Omit<T, "id">[]): Promise<T[]>;
+  batchCreate(items: Partial<Omit<T, "id">>[]): Promise<T[]>;
   batchUpdate(filter: string, data: Partial<T>): Promise<{ count: number }>;
   batchDelete(filter: string): Promise<{ count: number }>;
   subscribe(
@@ -272,6 +274,37 @@ export interface ResourceClient<T extends { id: string }> {
     callbacks?: SubscriptionCallbacks<T>
   ): Subscription<T>;
   rpc<TInput, TOutput>(name: string, input: TInput): Promise<TOutput>;
+  query(): ResourceQueryBuilder<T>;
+}
+
+/**
+ * Minimal interface for resource clients used by React hooks.
+ * This allows both library ResourceClient and generated TypedResourceClient to be used.
+ */
+export interface LiveListResourceClient<T extends { id: string }> {
+  list(options?: {
+    filter?: string;
+    select?: string[];
+    include?: string;
+    cursor?: string;
+    limit?: number;
+    orderBy?: string;
+    totalCount?: boolean;
+  }): Promise<{ items: T[]; nextCursor: string | null; hasMore: boolean; totalCount?: number }>;
+  create(data: Partial<Omit<T, "id">>, options?: { optimistic?: boolean; optimisticId?: string }): Promise<T>;
+  update(id: string, data: Partial<T>, options?: { optimistic?: boolean }): Promise<T>;
+  delete(id: string, options?: { optimistic?: boolean }): Promise<void>;
+  subscribe(
+    options?: { filter?: string; include?: string; resumeFrom?: number; skipExisting?: boolean; knownIds?: string[] },
+    callbacks?: SubscriptionCallbacks<T>
+  ): Subscription<T>;
+}
+
+/**
+ * Minimal interface for search functionality used by React hooks.
+ */
+export interface SearchableResourceClient<T extends { id: string }> {
+  search(query: string, options?: { filter?: string; limit?: number; offset?: number; highlight?: boolean }): Promise<{ items: T[]; total: number; highlights?: Record<string, Record<string, string[]>> }>;
 }
 
 export interface Subscription<T> {
@@ -279,6 +312,30 @@ export interface Subscription<T> {
   readonly items: T[];
   unsubscribe(): void;
   reconnect(): void;
+}
+
+/**
+ * Interface for typed LiveQuery objects from generated code.
+ * These can be passed directly to useLiveList for type-safe queries.
+ *
+ * @example
+ * // Generated LiveQuery with type-safe includes and select
+ * const query = client.resources.todos.filter('completed==true').include('category').select('id', 'title');
+ * const { items } = useLiveList(query);
+ * // items type: (Pick<todos, 'id' | 'title'> & { category?: categories | null })[]
+ */
+export interface LiveQueryLike<T extends { id: string } = { id: string }, Included = {}, Selected extends keyof T = keyof T> {
+  readonly _type: T;
+  readonly _included: Included;
+  readonly _selected: Selected;
+  readonly _path: string;
+  readonly _options: {
+    filter?: string;
+    orderBy?: string;
+    limit?: number;
+    select?: string[];
+    include?: string;
+  };
 }
 
 export interface PaginatedQuery<T> {

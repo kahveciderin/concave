@@ -714,7 +714,12 @@ export const useResource = <TConfig extends TableConfig>(
     const searchHandler = createSearchHandler(
       searchConfig,
       resourceName,
-      idColumnName
+      idColumnName,
+      {
+        scopeResolver,
+        getUser,
+        filterer,
+      }
     );
 
     router.get("/search", asyncHandler(searchHandler));
