@@ -1,5 +1,5 @@
 import { useSyncExternalStore, useRef, useEffect, useCallback, useState, useMemo } from "react";
-import type { ResourceClient, ConcaveClient } from "./types";
+import type { ResourceClient, ConcaveClient, SearchOptions, SearchResponse } from "./types";
 import { getClient, getAuthErrorHandler } from "./globals";
 import { createLiveQuery, LiveQuery, LiveQueryOptions, LiveQueryState, LiveQueryMutations, statusLabel } from "./live-store";
 
@@ -316,6 +316,95 @@ export function usePublicEnv<T = unknown>(
     isLoading,
     error,
     refetch: fetchEnv,
+  };
+}
+
+export interface UseSearchOptions extends SearchOptions {
+  debounceMs?: number;
+  enabled?: boolean;
+}
+
+export interface UseSearchResult<T> {
+  items: T[];
+  total: number;
+  highlights?: Record<string, Record<string, string[]>>;
+  isSearching: boolean;
+  error: Error | null;
+  search: (query: string) => void;
+  clear: () => void;
+}
+
+/**
+ * Search hook that handles debounced search requests.
+ *
+ * @example
+ * const { items, isSearching, search, clear } = useSearch<Todo>('/api/todos');
+ *
+ * // In your component:
+ * <input onChange={(e) => search(e.target.value)} />
+ * {items.map(item => <div key={item.id}>{item.title}</div>)}
+ */
+export function useSearch<T extends { id: string }>(
+  pathOrRepo: string | ResourceClient<T>,
+  options: UseSearchOptions = {}
+): UseSearchResult<T> {
+  const { debounceMs = 300, enabled = true, ...searchOptions } = options;
+
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<SearchResponse<T> | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const repo = useMemo(() => {
+    if (typeof pathOrRepo === "string") {
+      return getClient().resource<T>(pathOrRepo);
+    }
+    return pathOrRepo;
+  }, [pathOrRepo]);
+
+  useEffect(() => {
+    if (!enabled || !query.trim()) {
+      setResults(null);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    setError(null);
+
+    const timeoutId = setTimeout(async () => {
+      try {
+        const response = await repo.search(query, searchOptions);
+        setResults(response);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+        setResults(null);
+      } finally {
+        setIsSearching(false);
+      }
+    }, debounceMs);
+
+    return () => clearTimeout(timeoutId);
+  }, [query, repo, debounceMs, enabled, JSON.stringify(searchOptions)]);
+
+  const search = useCallback((newQuery: string) => {
+    setQuery(newQuery);
+  }, []);
+
+  const clear = useCallback(() => {
+    setQuery("");
+    setResults(null);
+    setError(null);
+  }, []);
+
+  return {
+    items: results?.items ?? [],
+    total: results?.total ?? 0,
+    highlights: results?.highlights,
+    isSearching,
+    error,
+    search,
+    clear,
   };
 }
 

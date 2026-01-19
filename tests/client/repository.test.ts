@@ -197,6 +197,100 @@ describe("Repository", () => {
     });
   });
 
+  describe("search", () => {
+    it("should search with query only", async () => {
+      mockRequest.mockResolvedValue({
+        data: {
+          items: [{ id: "1", name: "Alice", email: "alice@test.com" }],
+          total: 1,
+        },
+      });
+
+      const result = await repository.search("alice");
+
+      expect(mockRequest).toHaveBeenCalledWith({
+        method: "GET",
+        path: "/users/search",
+        params: { q: "alice" },
+      });
+      expect(result.items).toHaveLength(1);
+      expect(result.total).toBe(1);
+    });
+
+    it("should search with filter", async () => {
+      mockRequest.mockResolvedValue({
+        data: { items: [], total: 0 },
+      });
+
+      await repository.search("test", { filter: "active==true" });
+
+      expect(mockRequest).toHaveBeenCalledWith({
+        method: "GET",
+        path: "/users/search",
+        params: { q: "test", filter: "active==true" },
+      });
+    });
+
+    it("should search with pagination", async () => {
+      mockRequest.mockResolvedValue({
+        data: { items: [], total: 100 },
+      });
+
+      await repository.search("test", { limit: 10, offset: 20 });
+
+      expect(mockRequest).toHaveBeenCalledWith({
+        method: "GET",
+        path: "/users/search",
+        params: { q: "test", limit: 10, offset: 20 },
+      });
+    });
+
+    it("should search with highlights", async () => {
+      mockRequest.mockResolvedValue({
+        data: {
+          items: [{ id: "1", name: "Alice", email: "alice@test.com" }],
+          total: 1,
+          highlights: { "1": { name: ["<em>Alice</em>"] } },
+        },
+      });
+
+      const result = await repository.search("alice", { highlight: true });
+
+      expect(mockRequest).toHaveBeenCalledWith({
+        method: "GET",
+        path: "/users/search",
+        params: { q: "alice", highlight: true },
+      });
+      expect(result.highlights).toBeDefined();
+      expect(result.highlights?.["1"]?.name).toContain("<em>Alice</em>");
+    });
+
+    it("should search with all options combined", async () => {
+      mockRequest.mockResolvedValue({
+        data: { items: [], total: 0 },
+      });
+
+      await repository.search("test", {
+        filter: "active==true",
+        limit: 20,
+        offset: 10,
+        highlight: true,
+      });
+
+      expect(mockRequest).toHaveBeenCalledWith({
+        method: "GET",
+        path: "/users/search",
+        params: {
+          q: "test",
+          filter: "active==true",
+          limit: 20,
+          offset: 10,
+          highlight: true,
+        },
+      });
+    });
+  });
+
   describe("aggregate", () => {
     it("should aggregate with groupBy and count", async () => {
       mockRequest.mockResolvedValue({

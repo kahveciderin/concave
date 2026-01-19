@@ -2,9 +2,11 @@ import {
   ResourceClient,
   PaginatedResponse,
   AggregationResponse,
+  SearchResponse,
   ListOptions,
   GetOptions,
   AggregateOptions,
+  SearchOptions,
   CreateOptions,
   UpdateOptions,
   DeleteOptions,
@@ -98,6 +100,25 @@ export class Repository<T extends { id: string }> implements ResourceClient<T> {
     const response = await this.transport.request<AggregationResponse>({
       method: "GET",
       path: `${this.resourcePath}/aggregate`,
+      params,
+    });
+
+    return response.data;
+  }
+
+  async search(query: string, options: SearchOptions = {}): Promise<SearchResponse<T>> {
+    const params: Record<string, string | number | boolean> = {
+      q: query,
+    };
+
+    if (options.filter) params.filter = options.filter;
+    if (options.limit) params.limit = options.limit;
+    if (options.offset) params.offset = options.offset;
+    if (options.highlight) params.highlight = true;
+
+    const response = await this.transport.request<SearchResponse<T>>({
+      method: "GET",
+      path: `${this.resourcePath}/search`,
       params,
     });
 

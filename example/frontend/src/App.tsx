@@ -1,5 +1,5 @@
 import { getOrCreateClient } from 'concave/client';
-import { useAuth, useLiveList, usePublicEnv } from 'concave/client/react';
+import { useAuth, useLiveList, usePublicEnv, useSearch } from 'concave/client/react';
 import { AuthForm } from './components/AuthForm';
 import type { Todo, User, Category, Tag } from './generated/api-types';
 import { useState, useEffect } from 'react';
@@ -60,8 +60,6 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryColor, setNewCategoryColor] = useState('#6366f1');
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<TodoWithRelations[] | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
 
   // Fetch todos with relations (paginated - 5 items at a time)
   const {
@@ -84,35 +82,18 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
     { orderBy: 'name' }
   );
 
-  // Search functionality
+  // Search functionality using the useSearch hook
+  const {
+    items: searchResults,
+    isSearching,
+    search,
+    clear: clearSearch,
+  } = useSearch<TodoWithRelations>('/api/todos', { enabled: searchEnabled });
+
+  // Update search when query changes
   useEffect(() => {
-    if (!searchEnabled || !searchQuery.trim()) {
-      setSearchResults(null);
-      return;
-    }
-
-    const timeoutId = setTimeout(async () => {
-      setIsSearching(true);
-      try {
-        const response = await fetch(`/api/todos/search?q=${encodeURIComponent(searchQuery)}`);
-        if (response.ok) {
-          const data = await response.json();
-          setSearchResults(data.items);
-        }
-      } catch (error) {
-        console.error('Search failed:', error);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 300);
-
-    return () => clearTimeout(timeoutId);
-  }, [searchQuery, searchEnabled]);
-
-  const clearSearch = () => {
-    setSearchQuery('');
-    setSearchResults(null);
-  };
+    search(searchQuery);
+  }, [searchQuery, search]);
 
   const addTodo = () => {
     if (!newTodo.trim()) return;
@@ -159,15 +140,15 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
                   className="search-input"
                 />
                 {searchQuery && (
-                  <button className="search-clear" onClick={clearSearch}>×</button>
+                  <button className="search-clear" onClick={() => { clearSearch(); setSearchQuery(''); }}>×</button>
                 )}
                 {isSearching && <span className="search-indicator">Searching...</span>}
               </div>
-              {searchResults !== null && (
+              {searchQuery.trim() !== '' && (
                 <div className="search-results">
                   <div className="search-results-header">
                     <span>{searchResults.length} result{searchResults.length !== 1 ? 's' : ''} found</span>
-                    <button className="btn btn-secondary btn-small" onClick={clearSearch}>Clear</button>
+                    <button className="btn btn-secondary btn-small" onClick={() => { clearSearch(); setSearchQuery(''); }}>Clear</button>
                   </div>
                   {searchResults.length === 0 ? (
                     <div className="empty-state">

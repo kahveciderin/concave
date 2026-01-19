@@ -69,6 +69,19 @@ export interface AggregationResponse {
   groups: AggregationGroup[];
 }
 
+export interface SearchOptions {
+  filter?: string;
+  limit?: number;
+  offset?: number;
+  highlight?: boolean;
+}
+
+export interface SearchResponse<T> {
+  items: T[];
+  total: number;
+  highlights?: Record<string, Record<string, string[]>>;
+}
+
 export interface ErrorResponse {
   error: {
     code: string;
@@ -246,6 +259,7 @@ export interface ResourceClient<T extends { id: string }> {
   get(id: string, options?: GetOptions): Promise<T>;
   count(filter?: string): Promise<number>;
   aggregate(options: AggregateOptions): Promise<AggregationResponse>;
+  search(query: string, options?: SearchOptions): Promise<SearchResponse<T>>;
   create(data: Omit<T, "id">, options?: CreateOptions): Promise<T>;
   update(id: string, data: Partial<T>, options?: UpdateOptions): Promise<T>;
   replace(id: string, data: Omit<T, "id">, options?: UpdateOptions): Promise<T>;
