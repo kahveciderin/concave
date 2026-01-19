@@ -23,6 +23,8 @@ import {
   createHealthEndpoints,
   getGlobalKV,
   usePublicEnv,
+  setGlobalSearch,
+  createOpenSearchAdapter,
 } from "@kahveciderin/concave";
 
 import { env } from "./config/config";
@@ -38,6 +40,13 @@ import { db } from "./db/db";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 await initializeKV({ type: "memory", prefix: "todo-app" });
+
+if (env.searchConfig.opensearchUrl) {
+  setGlobalSearch(await createOpenSearchAdapter({
+    node: env.searchConfig.opensearchUrl,
+    indexPrefix: "todoapp_",
+  }));
+}
 
 const app = express();
 
@@ -186,6 +195,13 @@ app.use(
     id: todosTable.id,
     db,
     pagination: { defaultLimit: 100, maxLimit: 500 },
+    search: {
+      enabled: true,
+      fields: {
+        title: { weight: 2.0 },
+        description: { weight: 1.0 },
+      },
+    },
     auth: {
       read: async (user) => rsql`userId==${user?.id}`,
       create: async (user) => (user ? rsql`*` : rsql``),

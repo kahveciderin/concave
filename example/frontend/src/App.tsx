@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react';
 
 interface PublicEnv {
   PUBLIC_VERSION: string;
+  PUBLIC_OPENSEARCH_ENABLED: boolean;
 }
 
 // Extended Todo type with included relations
@@ -49,15 +50,18 @@ export function App() {
     return <AuthForm onLogin={() => window.location.reload()} version={env?.PUBLIC_VERSION} />;
   }
 
-  return <TodoApp user={user} onLogout={logout} version={env?.PUBLIC_VERSION} />;
+  return <TodoApp user={user} onLogout={logout} version={env?.PUBLIC_VERSION} searchEnabled={env?.PUBLIC_OPENSEARCH_ENABLED} />;
 }
 
-function TodoApp({ user, onLogout, version }: { user: User; onLogout: () => void; version?: string }) {
+function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLogout: () => void; version?: string; searchEnabled?: boolean }) {
   const [newTodo, setNewTodo] = useState('');
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [showCategoryForm, setShowCategoryForm] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryColor, setNewCategoryColor] = useState('#6366f1');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<TodoWithRelations[] | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
 
   // Fetch todos with relations (paginated - 5 items at a time)
   const {
@@ -79,6 +83,36 @@ function TodoApp({ user, onLogout, version }: { user: User; onLogout: () => void
     '/api/categories',
     { orderBy: 'name' }
   );
+
+  // Search functionality
+  useEffect(() => {
+    if (!searchEnabled || !searchQuery.trim()) {
+      setSearchResults(null);
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const response = await fetch(`/api/todos/search?q=${encodeURIComponent(searchQuery)}`);
+        if (response.ok) {
+          const data = await response.json();
+          setSearchResults(data.items);
+        }
+      } catch (error) {
+        console.error('Search failed:', error);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery, searchEnabled]);
+
+  const clearSearch = () => {
+    setSearchQuery('');
+    setSearchResults(null);
+  };
 
   const addTodo = () => {
     if (!newTodo.trim()) return;
@@ -113,6 +147,58 @@ function TodoApp({ user, onLogout, version }: { user: User; onLogout: () => void
           <button onClick={onLogout}>Sign out</button>
         </div>
         <div className="content">
+          {/* Search bar (only when OpenSearch is enabled) */}
+          {searchEnabled && (
+            <div className="search-section">
+              <div className="search-input-row">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search todos..."
+                  className="search-input"
+                />
+                {searchQuery && (
+                  <button className="search-clear" onClick={clearSearch}>×</button>
+                )}
+                {isSearching && <span className="search-indicator">Searching...</span>}
+              </div>
+              {searchResults !== null && (
+                <div className="search-results">
+                  <div className="search-results-header">
+                    <span>{searchResults.length} result{searchResults.length !== 1 ? 's' : ''} found</span>
+                    <button className="btn btn-secondary btn-small" onClick={clearSearch}>Clear</button>
+                  </div>
+                  {searchResults.length === 0 ? (
+                    <div className="empty-state">
+                      <p>No todos match your search.</p>
+                    </div>
+                  ) : (
+                    <ul className="todo-list search-results-list">
+                      {searchResults.map((todo) => (
+                        <li key={todo.id} className="todo-item">
+                          <div
+                            className={`todo-checkbox${todo.completed ? ' checked' : ''}`}
+                            onClick={() => mutate.update(todo.id, { completed: !todo.completed })}
+                          />
+                          <div className="todo-content">
+                            <span className={`todo-title${todo.completed ? ' completed' : ''}`}>
+                              {todo.title}
+                            </span>
+                            {todo.description && (
+                              <span className="todo-description">{todo.description}</span>
+                            )}
+                          </div>
+                          <button className="todo-delete" onClick={() => mutate.delete(todo.id)}>×</button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Todo input with category selector */}
           <div className="todo-input-row">
             <input

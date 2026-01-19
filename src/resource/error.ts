@@ -15,6 +15,8 @@ export const ERROR_TYPES = {
   CURSOR_INVALID: `${ERROR_TYPE_BASE}/cursor-invalid`,
   CURSOR_EXPIRED: `${ERROR_TYPE_BASE}/cursor-expired`,
   IDEMPOTENCY_MISMATCH: `${ERROR_TYPE_BASE}/idempotency-mismatch`,
+  SEARCH_NOT_CONFIGURED: `${ERROR_TYPE_BASE}/search-not-configured`,
+  SEARCH_FAILED: `${ERROR_TYPE_BASE}/search-failed`,
   INTERNAL_ERROR: `${ERROR_TYPE_BASE}/internal-error`,
   UNKNOWN_ERROR: `${ERROR_TYPE_BASE}/unknown-error`,
 } as const;
@@ -183,6 +185,22 @@ export class IdempotencyMismatchError extends ResourceError {
       suggestion: "Use a new idempotency key for different requests",
     });
     this.name = "IdempotencyMismatchError";
+  }
+}
+
+export class SearchNotConfiguredError extends ResourceError {
+  constructor(message = "Search is not configured") {
+    super(message, 501, "SEARCH_NOT_CONFIGURED", {
+      suggestion: "Configure a search adapter using setGlobalSearch()",
+    });
+    this.name = "SearchNotConfiguredError";
+  }
+}
+
+export class SearchError extends ResourceError {
+  constructor(message: string, details?: unknown) {
+    super(message, 500, "SEARCH_FAILED", details);
+    this.name = "SearchError";
   }
 }
 

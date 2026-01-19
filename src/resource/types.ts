@@ -302,6 +302,19 @@ export interface IncludeConfig {
   allowNestedFilters?: boolean;
 }
 
+export interface SearchFieldConfig {
+  weight?: number;
+  searchable?: boolean;
+  analyzer?: string;
+}
+
+export interface ResourceSearchConfig {
+  enabled?: boolean;
+  indexName?: string;
+  fields?: string[] | Record<string, SearchFieldConfig>;
+  autoIndex?: boolean;
+}
+
 export interface ResourceConfig<
   TConfig extends TableConfig,
   TTable extends Table<TConfig>,
@@ -327,4 +340,5 @@ export interface ResourceConfig<
   generatedFields?: string[];
   relations?: RelationsConfig;
   include?: IncludeConfig;
+  search?: ResourceSearchConfig;
 }

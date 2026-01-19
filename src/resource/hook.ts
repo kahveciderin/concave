@@ -64,7 +64,10 @@ import {
   UserContext,
   ProcedureContext,
   DrizzleTransaction,
+  ResourceSearchConfig,
 } from "./types";
+import { createSearchHandler } from "./search";
+import { hasGlobalSearch, getGlobalSearch } from "@/search";
 import {
   NotFoundError,
   ValidationError,
@@ -296,6 +299,7 @@ export const useResource = <TConfig extends TableConfig>(
         for (const item of createdArray) {
           await executeAfterCreate(hooks, ctx, item as any);
           recordCreate(resourceName, String(item[idColumnName]), item);
+          await indexDocument(String(item[idColumnName]), item);
         }
 
         await pushInsertsToSubscriptions(
@@ -357,6 +361,10 @@ export const useResource = <TConfig extends TableConfig>(
           return { count: afterItems.length, items: afterItems, previousMap };
         });
 
+        for (const item of result.items) {
+          await indexDocument(String(item[idColumnName]), item);
+        }
+
         await pushUpdatesToSubscriptions(
           resourceName,
           filterer as any,
@@ -402,6 +410,10 @@ export const useResource = <TConfig extends TableConfig>(
 
           return { count: items.length, deletedIds };
         });
+
+        for (const id of result.deletedIds) {
+          await deleteFromIndex(id);
+        }
 
         await pushDeletesToSubscriptions(resourceName, result.deletedIds);
 
@@ -663,6 +675,42 @@ export const useResource = <TConfig extends TableConfig>(
     );
   }
 
+  // Search endpoint and auto-indexing
+  const searchEnabled = config.search?.enabled !== false && hasGlobalSearch();
+  const autoIndexEnabled = searchEnabled && config.search?.autoIndex !== false;
+  const searchIndexName = config.search?.indexName ?? resourceName;
+
+  const indexDocument = async (id: string, document: Record<string, unknown>) => {
+    if (!autoIndexEnabled) return;
+    try {
+      const search = getGlobalSearch();
+      await search.index(searchIndexName, id, document);
+    } catch (err) {
+      console.error(`Failed to index document ${id} in ${searchIndexName}:`, err);
+    }
+  };
+
+  const deleteFromIndex = async (id: string) => {
+    if (!autoIndexEnabled) return;
+    try {
+      const search = getGlobalSearch();
+      await search.delete(searchIndexName, id);
+    } catch (err) {
+      console.error(`Failed to delete document ${id} from ${searchIndexName}:`, err);
+    }
+  };
+
+  if (searchEnabled) {
+    const searchConfig = config.search ?? {};
+    const searchHandler = createSearchHandler(
+      searchConfig,
+      resourceName,
+      idColumnName
+    );
+
+    router.get("/search", asyncHandler(searchHandler));
+  }
+
   router.post(
     "/",
     asyncHandler(async (req, res) => {
@@ -680,6 +728,7 @@ export const useResource = <TConfig extends TableConfig>(
       await executeAfterCreate(hooks, ctx, created);
 
       recordCreate(resourceName, String(createdObj[idColumnName]), createdObj);
+      await indexDocument(String(createdObj[idColumnName]), createdObj);
 
       const optimisticId = req.headers["x-concave-optimistic-id"] as string | undefined;
       const optimisticIds = optimisticId
@@ -837,6 +886,7 @@ export const useResource = <TConfig extends TableConfig>(
       await executeAfterUpdate(hooks, ctx, updated);
 
       recordUpdate(resourceName, id, updated, existing);
+      await indexDocument(id, updated);
 
       const previousMap = new Map<string, Record<string, unknown>>();
       previousMap.set(id, existing);
@@ -880,6 +930,7 @@ export const useResource = <TConfig extends TableConfig>(
       await executeAfterUpdate(hooks, ctx, updated);
 
       recordUpdate(resourceName, id, updated, existing);
+      await indexDocument(id, updated);
 
       const previousMap = new Map<string, Record<string, unknown>>();
       previousMap.set(id, existing);
@@ -917,6 +968,7 @@ export const useResource = <TConfig extends TableConfig>(
       await executeAfterDelete(hooks, ctx, existing);
 
       recordDelete(resourceName, id, existing);
+      await deleteFromIndex(id);
 
       await pushDeletesToSubscriptions(resourceName, [id]);
 

@@ -22,6 +22,8 @@ export {
   RateLimitError,
   BatchLimitError,
   ConflictError,
+  SearchError,
+  SearchNotConfiguredError,
   formatErrorResponse,
   formatZodError,
 } from "./resource/error";
@@ -286,3 +288,24 @@ export type {
 // Environment Variables
 export { createEnv, envVariable, usePublicEnv } from "./env";
 export type { PublicEnvConfig, PublicEnvSchema, EnvSchemaField } from "./env";
+
+// Search
+export {
+  setGlobalSearch,
+  getGlobalSearch,
+  hasGlobalSearch,
+  clearGlobalSearch,
+  createMemorySearchAdapter,
+  createOpenSearchAdapter,
+} from "./search";
+export type {
+  SearchAdapter,
+  SearchQuery,
+  SearchHit,
+  SearchResult,
+  SearchConfig,
+  FieldMapping,
+  IndexMappings,
+  OpenSearchConfig,
+} from "./search";
+export type { ResourceSearchConfig, SearchFieldConfig } from "./resource/types";

@@ -1,6 +1,6 @@
 {
   "name": "@kahveciderin/concave",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Real-time resource API framework for Express.js with TypeScript client",
   "type": "module",
   "main": "./dist/index.js",
@@ -117,6 +117,7 @@
     "url": "https://github.com/kahveciderin/concave/issues"
   },
   "dependencies": {
+    "@opensearch-project/opensearch": "^3.5.1",
     "cookie-parser": "^1.4.7",
     "cron-parser": "^5.4.0",
     "dotenv": "^17.2.3",
