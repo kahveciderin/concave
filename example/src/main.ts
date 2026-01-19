@@ -25,6 +25,8 @@ import {
   usePublicEnv,
   setGlobalSearch,
   createOpenSearchAdapter,
+  initializeStorage,
+  useFileResource,
 } from "@kahveciderin/concave";
 
 import { env } from "./config/config";
@@ -34,12 +36,22 @@ import {
   categoriesTable,
   tagsTable,
   todoTagsTable,
+  filesTable,
 } from "./db/schema";
 import { db } from "./db/db";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 await initializeKV({ type: "memory", prefix: "todo-app" });
+
+const uploadsDir = path.join(__dirname, "../.tmp/uploads");
+initializeStorage({
+  type: "local",
+  local: {
+    basePath: uploadsDir,
+    baseUrl: "/uploads",
+  },
+});
 
 if (env.searchConfig.opensearchUrl) {
   setGlobalSearch(await createOpenSearchAdapter({
@@ -218,6 +230,13 @@ app.use(
         foreignKey: todosTable.categoryId,
         references: categoriesTable.id,
       },
+      image: {
+        resource: "files",
+        schema: filesTable,
+        type: "belongsTo",
+        foreignKey: todosTable.imageId,
+        references: filesTable.id,
+      },
       tags: {
         resource: "tags",
         schema: tagsTable,
@@ -254,6 +273,24 @@ app.use(
     },
   })
 );
+
+app.use(
+  "/api/files",
+  useFileResource(filesTable, {
+    db,
+    schema: filesTable,
+    id: filesTable.id,
+    allowedMimeTypes: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+    maxFileSize: 5 * 1024 * 1024,
+    auth: {
+      read: async (user) => rsql`userId==${user?.id}`,
+      create: async (user) => (user ? rsql`*` : rsql``),
+      delete: async (user) => rsql`userId==${user?.id}`,
+    },
+  })
+);
+
+app.use("/uploads", express.static(uploadsDir));
 
 app.use(
   "/__concave",

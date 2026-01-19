@@ -410,3 +410,20 @@ export function useSearch<T extends { id: string }>(
 
 export { statusLabel } from "./live-store";
 export type { LiveQueryStatus, LiveQueryState, LiveQueryMutations, LiveQuery, SubscriptionMode } from "./live-store";
+
+export {
+  useFileUpload,
+  useFile,
+  useFiles,
+} from "./react-files";
+export type {
+  UseFileUploadOptions,
+  UseFileUploadResult,
+  UseFileOptions,
+  UseFileResult,
+  UseFilesOptions,
+  UseFilesResult,
+  UploadedFile,
+  UploadProgress,
+  FileUploadOptions,
+} from "./react-files";

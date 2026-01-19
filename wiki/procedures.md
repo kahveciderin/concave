@@ -22,7 +22,6 @@ useResource(postsTable, {
         success: z.boolean(),
         publishedAt: z.string().datetime(),
       }),
-      writeEffects: [{ type: "update", resource: "posts" }],
       handler: async (ctx, input) => {
         if (!ctx.user) {
           throw new Error("Not authenticated");
@@ -30,12 +29,14 @@ useResource(postsTable, {
 
         const publishedAt = input.scheduledAt ?? new Date().toISOString();
 
+        // Use tracked db for automatic subscription updates
         await db.update(postsTable)
           .set({
             published: true,
             publishedAt: new Date(publishedAt)
           })
-          .where(eq(postsTable.id, input.id));
+          .where(eq(postsTable.id, input.id))
+          .returning();
 
         return { success: true, publishedAt };
       },
@@ -143,26 +144,91 @@ The context object provides:
 
 ```typescript
 interface ProcedureContext {
-  db: Database;           // Database instance
+  db: TrackedDatabase;    // Tracked database instance (mutations auto-recorded)
   schema: Table;          // Drizzle table schema
   user: UserContext | null;  // Authenticated user
   req: Request;           // Express request
 }
 ```
 
-## Write Effects
+## Automatic Mutation Tracking
 
-Declare what resources a procedure modifies for subscription updates:
+The `ctx.db` in procedures is automatically tracked for the current resource. Mutations made via `ctx.db` are recorded to the changelog and push updates to subscribers:
 
 ```typescript
 defineProcedure({
+  handler: async (ctx, input) => {
+    // ctx.db is automatically tracked - mutations push to subscribers
+    const [updated] = await ctx.db.update(postsTable)
+      .set({ published: true })
+      .where(eq(postsTable.id, input.id))
+      .returning();
+
+    return { success: true, post: updated };
+  },
+});
+```
+
+### Multi-Table Tracking
+
+If your procedure modifies multiple tables, pass a pre-configured tracked db to `config.db`:
+
+```typescript
+import { trackMutations } from "@kahveciderin/concave";
+
+// Wrap your db instance once at startup with all tables
+const trackedDb = trackMutations(baseDb, {
+  posts: { table: postsTable, id: postsTable.id },
+  users: { table: usersTable, id: usersTable.id },
+  notifications: { table: notificationsTable, id: notificationsTable.id },
+});
+
+// Pass the tracked db to useResource
+app.use("/posts", useResource(postsTable, {
+  id: postsTable.id,
+  db: trackedDb,  // Already tracked - won't be double-wrapped
+  procedures: {
+    publish: defineProcedure({
+      handler: async (ctx, input) => {
+        // Both updates are tracked
+        await ctx.db.update(postsTable)
+          .set({ published: true })
+          .where(eq(postsTable.id, input.id))
+          .returning();
+
+        await ctx.db.insert(notificationsTable)
+          .values({ type: "post_published", postId: input.id })
+          .returning();
+
+        return { success: true };
+      },
+    }),
+  },
+}));
+```
+
+See [Mutation Tracking](./track-mutations.md) for full documentation.
+
+## Legacy: Write Effects (Deprecated)
+
+The `writeEffects` property is deprecated. Use `trackMutations` instead for automatic, accurate subscription updates.
+
+```typescript
+// ❌ Deprecated approach
+defineProcedure({
   writeEffects: [
-    { type: "create", resource: "posts" },
-    { type: "update", resource: "users", ids: ["user-123"] },
-    { type: "delete", resource: "comments" },
+    { type: "update", resource: "posts" },
   ],
   handler: async (ctx, input) => {
-    // ...
+    await db.update(postsTable).set({ ... }).where(...);
+  },
+});
+
+// ✅ Recommended approach
+defineProcedure({
+  handler: async (ctx, input) => {
+    // Use tracked db - updates are automatically recorded
+    await trackedDb.update(postsTable).set({ ... }).where(...).returning();
   },
 });
 ```

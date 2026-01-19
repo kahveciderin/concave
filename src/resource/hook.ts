@@ -56,6 +56,7 @@ import {
   executeBeforeDelete,
   executeAfterDelete,
 } from "./procedures";
+import { trackMutations, isTrackedDb } from "./track-mutations";
 import {
   ResourceConfig,
   CustomOperator,
@@ -244,8 +245,16 @@ export const useResource = <TConfig extends TableConfig>(
     return (req as AuthenticatedRequest).user ?? null;
   };
 
+  // Create a tracked db for procedures if not already tracked
+  // This ensures mutations in procedures are automatically recorded to changelog
+  const trackedDb = isTrackedDb(db)
+    ? db
+    : trackMutations(db, {
+        [resourceName]: { table: schema, id: config.id },
+      });
+
   const createProcedureContext = (req: Request): ProcedureContext<TConfig> => ({
-    db,
+    db: trackedDb,
     schema,
     user: getUser(req),
     req,

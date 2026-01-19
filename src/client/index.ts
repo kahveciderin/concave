@@ -292,3 +292,17 @@ export type {
   EnvSchemaField,
   PublicEnvSchema,
 } from "./env";
+
+export {
+  createFileClient,
+} from "./file-upload";
+export type {
+  FileClient,
+  FileUploadOptions,
+  UploadProgress,
+  UploadedFile,
+  PresignedUploadResponse,
+  FileListOptions,
+  FileListResponse,
+  FileClientConfig,
+} from "./file-upload";

@@ -534,3 +534,78 @@ input:focus {
   color: #999;
   margin-top: 2px;
 }
+
+/* Image upload styles */
+.todo-image-container {
+  position: relative;
+  margin-top: 8px;
+  max-width: 200px;
+}
+
+.todo-image {
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.todo-image-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  font-size: 14px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.todo-image-container:hover .todo-image-remove {
+  opacity: 1;
+}
+
+.todo-image-remove:hover {
+  background: rgba(231, 76, 60, 0.9);
+}
+
+.todo-image-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px dashed #ccc;
+  background: white;
+  color: #999;
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.todo-image-btn:hover {
+  border-color: #667eea;
+  color: #667eea;
+  background: #f0f4ff;
+}
+
+.todo-image-btn.uploading {
+  border-style: solid;
+  border-color: #667eea;
+  color: #667eea;
+  font-size: 10px;
+}
+
+.todo-image-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

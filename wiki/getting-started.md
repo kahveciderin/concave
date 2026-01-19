@@ -178,6 +178,7 @@ function UserList() {
 
 ### Advanced
 - [Procedures & Hooks](./procedures.md) - RPC and lifecycle hooks
+- [Mutation Tracking](./track-mutations.md) - Automatic changelog and cache invalidation
 - [Error Handling](./error-handling.md) - Error types and handling
 
 ### API Documentation

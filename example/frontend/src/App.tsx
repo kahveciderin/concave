@@ -1,8 +1,8 @@
 import { getOrCreateClient } from 'concave/client';
-import { useAuth, useLiveList, usePublicEnv, useSearch } from 'concave/client/react';
+import { useAuth, useLiveList, usePublicEnv, useSearch, useFileUpload, UploadedFile } from 'concave/client/react';
 import { AuthForm } from './components/AuthForm';
-import type { Todo, User, Category, Tag } from './generated/api-types';
-import { useState, useEffect } from 'react';
+import type { Todo, User, Category, Tag, FileRecord } from './generated/api-types';
+import { useState, useEffect, useRef } from 'react';
 
 interface PublicEnv {
   PUBLIC_VERSION: string;
@@ -12,6 +12,7 @@ interface PublicEnv {
 // Extended Todo type with included relations
 interface TodoWithRelations extends Todo {
   category?: Category | null;
+  image?: FileRecord | null;
   tags?: Tag[];
 }
 
@@ -60,6 +61,8 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryColor, setNewCategoryColor] = useState('#6366f1');
   const [searchQuery, setSearchQuery] = useState('');
+  const [uploadingTodoId, setUploadingTodoId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch todos with relations (paginated - 5 items at a time)
   const {
@@ -73,8 +76,13 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
     loadMore,
   } = useLiveList<TodoWithRelations>(
     '/api/todos',
-    { orderBy: 'position', include: 'category,tags', limit: 5 }
+    { orderBy: 'position', include: 'category,image,tags', limit: 5 }
   );
+
+  // File upload hook
+  const { upload, isUploading, progress } = useFileUpload({
+    resourcePath: '/api/files',
+  });
 
   // Fetch categories for the dropdown
   const { items: categories, mutate: categoryMutate } = useLiveList<Category>(
@@ -112,6 +120,22 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
     } as Omit<Category, 'id'>);
     setNewCategoryName('');
     setShowCategoryForm(false);
+  };
+
+  const handleImageUpload = async (todoId: string, file: File) => {
+    try {
+      setUploadingTodoId(todoId);
+      const uploaded = await upload(file);
+      mutate.update(todoId, { imageId: uploaded.id });
+    } catch (error) {
+      console.error('Failed to upload image:', error);
+    } finally {
+      setUploadingTodoId(null);
+    }
+  };
+
+  const handleRemoveImage = (todoId: string) => {
+    mutate.update(todoId, { imageId: null });
   };
 
   const completedCount = todos.filter((t) => t.completed).length;
@@ -255,6 +279,21 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
             )}
           </div>
 
+          {/* Hidden file input for image uploads */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file && uploadingTodoId) {
+                handleImageUpload(uploadingTodoId, file);
+              }
+              e.target.value = '';
+            }}
+          />
+
           {todos.length === 0 ? (
             <div className="empty-state">
               <div className="empty-state-icon">🎉</div>
@@ -294,7 +333,40 @@ function TodoApp({ user, onLogout, version, searchEnabled }: { user: User; onLog
                       </div>
                     );
                     })()}
+                    {/* Image display */}
+                    {todo.image && (
+                      <div className="todo-image-container">
+                        <img
+                          src={todo.image.url || `/api/files/${todo.imageId}/download`}
+                          alt={todo.image.filename}
+                          className="todo-image"
+                        />
+                        <button
+                          className="todo-image-remove"
+                          onClick={() => handleRemoveImage(todo.id)}
+                          title="Remove image"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
                   </div>
+                  {/* Image upload button */}
+                  <button
+                    className={`todo-image-btn${uploadingTodoId === todo.id ? ' uploading' : ''}`}
+                    onClick={() => {
+                      setUploadingTodoId(todo.id);
+                      fileInputRef.current?.click();
+                    }}
+                    disabled={isUploading}
+                    title={todo.image ? 'Change image' : 'Add image'}
+                  >
+                    {uploadingTodoId === todo.id && isUploading ? (
+                      progress ? `${progress.percent}%` : '...'
+                    ) : (
+                      todo.image ? '📷' : '+'
+                    )}
+                  </button>
                   {/* Category quick-assign dropdown */}
                   <select
                     value={todo.categoryId ?? ''}

@@ -309,3 +309,46 @@ export type {
   OpenSearchConfig,
 } from "./search";
 export type { ResourceSearchConfig, SearchFieldConfig } from "./resource/types";
+
+// Storage (File Uploads)
+export {
+  setGlobalStorage,
+  getGlobalStorage,
+  hasGlobalStorage,
+  clearGlobalStorage,
+  createStorage,
+  initializeStorage,
+  createMemoryStorage,
+  createLocalStorage,
+  createS3Storage,
+  MemoryStorageAdapter,
+  LocalStorageAdapter,
+  S3StorageAdapter,
+} from "./storage";
+export type {
+  StorageAdapter,
+  FileMetadata,
+  UploadOptions,
+  UploadResult,
+  PresignedUrlOptions,
+  PresignedUploadResult,
+  LocalStorageConfig,
+  S3StorageConfig,
+  StorageConfig,
+} from "./storage";
+export { useFileResource } from "./storage/resource";
+export type { FileResourceConfig, FileRecord, FileTableSchema } from "./storage/resource";
+
+// Mutation Tracking
+export {
+  trackMutations,
+  isTrackedDb,
+  invalidateCache,
+  invalidateAllCache,
+} from "./resource/track-mutations";
+export type {
+  TableRegistration,
+  TrackMutationsConfig,
+  CacheConfig,
+  TrackedDatabase,
+} from "./resource/track-mutations";

@@ -203,6 +203,28 @@ Concave uses a changelog-based approach for reliable subscriptions:
 3. On reconnection, clients can resume from their last sequence
 4. If too many changes occurred, an invalidate event is sent
 
+### Mutations in Custom Express Routes
+
+Mutations made via `useResource` endpoints are automatically recorded to the changelog. For custom Express routes, wrap your database with `trackMutations` to ensure mutations are tracked:
+
+```typescript
+import { trackMutations } from "@kahveciderin/concave";
+
+const db = trackMutations(baseDb, {
+  todos: { table: todosTable, id: todosTable.id },
+});
+
+// Custom route - mutations automatically tracked and push to subscribers
+app.post("/api/custom-action", async (req, res) => {
+  const [todo] = await db.insert(todosTable)
+    .values({ title: req.body.title })
+    .returning();
+  res.json(todo);
+});
+```
+
+See [Mutation Tracking](./track-mutations.md) for full documentation.
+
 ### Reconnection
 
 ```typescript

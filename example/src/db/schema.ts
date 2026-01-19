@@ -8,6 +8,18 @@ export const usersTable = sqliteTable("users", {
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
+export const filesTable = sqliteTable("files", {
+  id: text("id").primaryKey(),
+  userId: text("userId").references(() => usersTable.id, { onDelete: "cascade" }),
+  filename: text("filename").notNull(),
+  mimeType: text("mimeType").notNull(),
+  size: integer("size").notNull(),
+  storagePath: text("storagePath").notNull(),
+  url: text("url"),
+  status: text("status", { enum: ["pending", "completed"] }).notNull().default("pending"),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
 export const categoriesTable = sqliteTable("categories", {
   id: text("id").primaryKey(),
   userId: text("userId").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
@@ -27,6 +39,7 @@ export const todosTable = sqliteTable("todos", {
   id: text("id").primaryKey(),
   userId: text("userId").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   categoryId: text("categoryId").references(() => categoriesTable.id, { onDelete: "set null" }),
+  imageId: text("imageId").references(() => filesTable.id, { onDelete: "set null" }),
   title: text("title").notNull(),
   completed: integer("completed", { mode: "boolean" }).notNull().default(false),
   position: integer("position").notNull().default(0),
@@ -43,6 +56,8 @@ export const todoTagsTable = sqliteTable("todoTags", {
 
 export type User = typeof usersTable.$inferSelect;
 export type NewUser = typeof usersTable.$inferInsert;
+export type FileRecord = typeof filesTable.$inferSelect;
+export type NewFileRecord = typeof filesTable.$inferInsert;
 export type Category = typeof categoriesTable.$inferSelect;
 export type NewCategory = typeof categoriesTable.$inferInsert;
 export type Tag = typeof tagsTable.$inferSelect;

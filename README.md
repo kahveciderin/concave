@@ -200,6 +200,7 @@ Comprehensive documentation is available in the [wiki](./wiki):
 
 ### Advanced
 - [Procedures & Hooks](./wiki/procedures.md) - RPC and lifecycle hooks
+- [Mutation Tracking](./wiki/track-mutations.md) - Automatic changelog and cache invalidation
 - [Middleware](./wiki/middleware.md) - Observability, versioning, idempotency
 - [OpenAPI](./wiki/openapi.md) - OpenAPI spec generation
 - [Admin UI](./wiki/admin-ui.md) - Built-in dashboard
@@ -337,6 +338,55 @@ await getTaskScheduler().scheduleRecurring(dailyReportTask, {}, {
   cron: "0 6 * * *",
   timezone: "UTC",
 });
+```
+
+## Mutation Tracking
+
+Track all database mutations automatically for subscriptions and caching in custom Express routes:
+
+```typescript
+import { drizzle } from "drizzle-orm/libsql";
+import { trackMutations } from "@kahveciderin/concave";
+import * as schema from "./schema";
+
+const baseDb = drizzle(/* config */);
+
+// Wrap database with mutation tracking
+export const db = trackMutations(baseDb, {
+  todos: { table: schema.todosTable, id: schema.todosTable.id },
+  users: { table: schema.usersTable, id: schema.usersTable.id },
+});
+
+// Custom route - mutations are automatically tracked!
+app.post("/api/custom-action", async (req, res) => {
+  const [todo] = await db
+    .insert(todosTable)
+    .values({ title: req.body.title, userId: req.user.id })
+    .returning();
+  // ^ This insert is recorded in changelog, subscriptions notified
+
+  res.json(todo);
+});
+```
+
+Enable query caching with automatic invalidation:
+
+```typescript
+const db = trackMutations(baseDb, tables, {
+  cache: {
+    enabled: true,
+    ttl: 60000, // Optional TTL in ms
+  },
+});
+
+// First query: hits database, caches result
+const todos = await db.select().from(todosTable);
+
+// Second query: returns cached result
+const todosAgain = await db.select().from(todosTable);
+
+// Mutation invalidates cache automatically
+await db.insert(todosTable).values({ title: "New" }).returning();
 ```
 
 ## Query Parameters

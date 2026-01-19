@@ -191,15 +191,19 @@ RPC procedures:
       input: z.object({ id: z.string() }),
       output: z.object({ success: z.boolean() }),
       handler: async (ctx, input) => {
+        // Use tracked db for automatic subscription updates
         await db.update(postsTable)
           .set({ published: true })
-          .where(eq(postsTable.id, input.id));
+          .where(eq(postsTable.id, input.id))
+          .returning();
         return { success: true };
       },
     }),
   },
 }
 ```
+
+For mutations inside procedures to automatically notify subscribers, use a database wrapped with `trackMutations`. See [Mutation Tracking](./track-mutations.md) for details.
 
 ## Generated Endpoints
 
@@ -237,4 +241,5 @@ RPC procedures:
 - [Aggregations](./aggregations.md) - Statistical queries and grouping
 - [Subscriptions](./subscriptions.md) - Real-time event streaming
 - [Procedures & Hooks](./procedures.md) - RPC and lifecycle hooks
+- [Mutation Tracking](./track-mutations.md) - Automatic changelog and cache invalidation
 - [Authentication](./authentication.md) - Auth setup and authorization scopes
