@@ -718,7 +718,7 @@ export const useResource = <TConfig extends TableConfig>(
       {
         scopeResolver,
         getUser,
-        filterer,
+        filterer: filterer as { execute: (expr: string, obj: unknown) => boolean },
       }
     );
 

@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { getGlobalSearch, hasGlobalSearch, SearchConfig } from "@/search";
 import { ValidationError, SearchError } from "./error";
-import { ScopeResolver, combineScopes } from "@/auth/scope";
+import { ScopeResolver } from "@/auth/scope";
 import { UserContext } from "./types";
 
 const ISO_DATE_REGEX =
@@ -217,7 +217,7 @@ export interface SearchHandlerOptions {
   scopeResolver: ScopeResolver;
   getUser: (req: Request) => UserContext | null;
   filterer: {
-    execute: (expr: string, obj: Record<string, unknown>) => boolean;
+    execute: (expr: string, obj: unknown) => boolean;
   };
 }
 
@@ -286,14 +286,16 @@ export const createSearchHandler = (
       const userFilter = req.query.filter as string | undefined;
 
       if (options && authScope && authScope !== "*") {
-        const combinedFilter = combineScopes(
-          { toString: () => authScope!, isEmpty: () => authScope === "" },
-          userFilter
-        );
+        let combinedFilter: string;
+        if (!userFilter || userFilter.trim() === "") {
+          combinedFilter = authScope;
+        } else {
+          combinedFilter = `(${authScope});(${userFilter})`;
+        }
 
         if (combinedFilter) {
           items = items.filter((item) =>
-            options.filterer.execute(combinedFilter, item as Record<string, unknown>)
+            options.filterer.execute(combinedFilter, item)
           );
         }
       } else if (userFilter) {
