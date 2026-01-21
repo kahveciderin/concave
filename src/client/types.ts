@@ -373,10 +373,23 @@ export interface AuthManager {
   on(event: string, listener: (...args: unknown[]) => void): () => void;
 }
 
+export interface JWTClientInterface {
+  getState(): unknown;
+  getAccessToken(): string | null;
+  isAuthenticated(): boolean;
+  login(email: string, password: string): Promise<unknown>;
+  signup(email: string, password: string, name?: string): Promise<unknown>;
+  refresh(): Promise<unknown>;
+  logout(): Promise<void>;
+  getUser(): Promise<unknown | null>;
+  subscribe(listener: (state: unknown) => void): () => void;
+}
+
 export interface ConcaveClient {
   readonly transport: unknown;
   readonly offline?: unknown;
   readonly auth: AuthManager;
+  readonly jwt?: JWTClientInterface;
   resource<T extends { id: string }>(path: string): ResourceClient<T>;
   setAuthToken(token: string): void;
   clearAuthToken(): void;

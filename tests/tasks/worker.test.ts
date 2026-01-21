@@ -494,4 +494,61 @@ describe("TaskWorker", () => {
       expect(stored?.lastError).toContain("Unknown task type");
     });
   });
+
+  describe("race condition prevention", () => {
+    it("should only execute a task once with multiple workers", async () => {
+      let executionCount = 0;
+
+      const task = defineTask({
+        name: "race-test",
+        handler: async () => {
+          executionCount++;
+          await sleep(100);
+          return { done: true };
+        },
+      });
+      registry.register(task);
+
+      const createdWorkers = await startTaskWorkers(kv, registry, 3, {
+        pollIntervalMs: 10,
+        concurrency: 5,
+      });
+      workers.push(...createdWorkers);
+
+      await scheduler.enqueue(task, {});
+      await sleep(300);
+
+      expect(executionCount).toBe(1);
+    });
+
+    it("should not reprocess a completed task if it ends up in queue again", async () => {
+      let executionCount = 0;
+
+      const task = defineTask({
+        name: "completed-requeue-test",
+        handler: async () => {
+          executionCount++;
+          return { done: true };
+        },
+      });
+      registry.register(task);
+
+      const worker = createTaskWorker(kv, registry, { pollIntervalMs: 20 });
+      workers.push(worker);
+      await worker.start();
+
+      const taskId = await scheduler.enqueue(task, {});
+      await sleep(150);
+
+      expect(executionCount).toBe(1);
+
+      const storedTask = await scheduler.getTask(taskId);
+      expect(storedTask?.status).toBe("completed");
+
+      await kv.zadd("concave:tasks:queue:50", Date.now(), taskId);
+      await sleep(150);
+
+      expect(executionCount).toBe(1);
+    });
+  });
 });

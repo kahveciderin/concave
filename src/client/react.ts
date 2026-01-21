@@ -531,3 +531,12 @@ export type {
   UploadProgress,
   FileUploadOptions,
 } from "./react-files";
+
+export {
+  useJWTAuth,
+  initJWTClient,
+  getJWTClient,
+} from "./react-jwt";
+export type {
+  UseJWTAuthResult,
+} from "./react-jwt";

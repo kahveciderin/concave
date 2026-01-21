@@ -56,6 +56,12 @@ export const createTaskQueue = (kv: KVAdapter): TaskQueue => {
             continue;
           }
 
+          if (task.status !== "pending" && task.status !== "scheduled") {
+            await lock.release(taskId, workerId);
+            await kv.zrem(queueKey, taskId);
+            continue;
+          }
+
           if (taskTypes && !taskTypes.includes(task.name)) {
             await lock.release(taskId, workerId);
             continue;

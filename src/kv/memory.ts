@@ -126,6 +126,7 @@ export class MemoryKVStore implements KVAdapter {
 
   async set(key: string, value: string, options?: SetOptions): Promise<void> {
     const k = this.key(key);
+    this.checkExpiry(k);
     const existing = this.store.get(k);
 
     if (options?.nx && existing) return;

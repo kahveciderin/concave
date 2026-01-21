@@ -9,6 +9,7 @@ import {
   createAuthManager,
   OIDCClientConfig,
 } from "./auth";
+import { createJWTClient, JWTClient, JWTClientConfig } from "./jwt";
 
 export { getClient, setGlobalClient, getAuthErrorHandler } from "./globals";
 export type { ConcaveClient } from "./types";
@@ -23,6 +24,7 @@ export interface SimplifiedClientConfig {
   onSyncComplete?: () => void;
   authCheckUrl?: string;
   auth?: OIDCClientConfig;
+  jwt?: Omit<JWTClientConfig, "baseUrl">;
 }
 
 export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
@@ -34,6 +36,39 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
   });
 
   const auth = createAuthManager();
+  let jwtClient: JWTClient | undefined;
+
+  if (config.jwt) {
+    jwtClient = createJWTClient({
+      ...config.jwt,
+      baseUrl: config.baseUrl,
+      onAuthChange: (authenticated) => {
+        if (authenticated) {
+          const token = jwtClient!.getAccessToken();
+          if (token) {
+            transport.setHeader("Authorization", `Bearer ${token}`);
+          }
+        } else {
+          transport.removeHeader("Authorization");
+        }
+      },
+    });
+
+    // Set initial token if exists
+    const initialToken = jwtClient.getAccessToken();
+    if (initialToken) {
+      transport.setHeader("Authorization", `Bearer ${initialToken}`);
+    }
+
+    // Subscribe to state changes for token updates
+    jwtClient.subscribe((state) => {
+      if (state.accessToken) {
+        transport.setHeader("Authorization", `Bearer ${state.accessToken}`);
+      } else {
+        transport.removeHeader("Authorization");
+      }
+    });
+  }
 
   if (config.auth) {
     auth.configure(config.auth);
@@ -109,6 +144,7 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
     transport,
     offline,
     auth,
+    jwt: jwtClient,
 
     resource<T extends { id: string }>(path: string): ResourceClient<T> {
       return createRepository<T>({
@@ -323,3 +359,17 @@ export type {
   FileListResponse,
   FileClientConfig,
 } from "./file-upload";
+
+export {
+  createJWTClient,
+  MemoryTokenStorage as JWTMemoryTokenStorage,
+  LocalStorageTokenStorage as JWTLocalStorageTokenStorage,
+} from "./jwt";
+export type {
+  JWTClient,
+  JWTClientConfig,
+  JWTTokens,
+  JWTUser,
+  JWTAuthState,
+  TokenStorage as JWTTokenStorage,
+} from "./jwt";
