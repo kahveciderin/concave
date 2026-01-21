@@ -1,4 +1,4 @@
-import { Request, Router } from "express";
+import { Request, Response, NextFunction, Router } from "express";
 import jwt, { SignOptions, VerifyOptions, Algorithm } from "jsonwebtoken";
 import { BaseAuthAdapter, createUserContext } from "../adapter";
 import {
@@ -45,6 +45,7 @@ export interface JWTAdapterOptions {
   jwt: JWTConfig;
   getUserById: (id: string) => Promise<JWTUser | null>;
   validatePassword?: (email: string, password: string) => Promise<JWTUser | null>;
+  createUser?: (data: { email: string; password: string; name?: string }) => Promise<JWTUser>;
   refreshTokenStore?: SessionStore;
   getUserContext?: (user: JWTUser, payload: JWTPayload) => UserContext;
   onTokenRefresh?: (
@@ -62,6 +63,7 @@ export class JWTAdapter extends BaseAuthAdapter {
     JWTConfig;
   private getUserByIdFn: JWTAdapterOptions["getUserById"];
   private validatePasswordFn?: JWTAdapterOptions["validatePassword"];
+  private createUserFn?: JWTAdapterOptions["createUser"];
   private refreshStore?: SessionStore;
   private getUserContextFn?: JWTAdapterOptions["getUserContext"];
   private onTokenRefreshFn?: JWTAdapterOptions["onTokenRefresh"];
@@ -77,6 +79,7 @@ export class JWTAdapter extends BaseAuthAdapter {
     };
     this.getUserByIdFn = options.getUserById;
     this.validatePasswordFn = options.validatePassword;
+    this.createUserFn = options.createUser;
     this.refreshStore = options.refreshTokenStore;
     this.getUserContextFn = options.getUserContext;
     this.onTokenRefreshFn = options.onTokenRefresh;
@@ -243,6 +246,30 @@ export class JWTAdapter extends BaseAuthAdapter {
     }
   }
 
+  get middleware() {
+    return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const credentials = this.extractCredentials(req);
+        if (!credentials) {
+          req.user = null;
+          return next();
+        }
+
+        const result = await this.validateCredentials(credentials);
+        if (!result.success || !result.user) {
+          req.user = null;
+          return next();
+        }
+
+        req.user = result.user;
+        next();
+      } catch {
+        req.user = null;
+        next();
+      }
+    };
+  }
+
   getRoutes(): Router {
     const router = Router();
 
@@ -315,6 +342,70 @@ export class JWTAdapter extends BaseAuthAdapter {
           expiresIn: tokens.expiresIn,
           tokenType: "Bearer",
         });
+      });
+    }
+
+    if (this.createUserFn) {
+      router.post("/signup", async (req, res) => {
+        const { email, password, name } = req.body;
+
+        if (!email || !password) {
+          return res.status(400).json({
+            error: {
+              code: "INVALID_INPUT",
+              message: "Email and password required",
+            },
+          });
+        }
+
+        try {
+          const user = await this.createUserFn!({ email, password, name });
+          const tokens = this.generateTokens(user);
+
+          if (this.refreshStore) {
+            const decoded = jwt.decode(tokens.accessToken) as JWTPayload;
+            const jti = `refresh:${decoded.jti}`;
+            await this.refreshStore.set(
+              jti,
+              {
+                id: jti,
+                userId: user.id,
+                createdAt: new Date(),
+                expiresAt: new Date(
+                  Date.now() + this.jwtConfig.refreshTokenTtl * 1000
+                ),
+              },
+              this.jwtConfig.refreshTokenTtl * 1000
+            );
+          }
+
+          res.cookie("refreshToken", tokens.refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "strict",
+            maxAge: this.jwtConfig.refreshTokenTtl * 1000,
+            path: "/",
+          });
+
+          res.status(201).json({
+            accessToken: tokens.accessToken,
+            expiresIn: tokens.expiresIn,
+            tokenType: "Bearer",
+            user: {
+              id: user.id,
+              email: user.email,
+              name: user.name,
+            },
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to create user";
+          return res.status(400).json({
+            error: {
+              code: "SIGNUP_FAILED",
+              message,
+            },
+          });
+        }
       });
     }
 
