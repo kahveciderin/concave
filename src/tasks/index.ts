@@ -12,7 +12,7 @@ export {
 export type { TaskScheduler, TaskRegistry } from "./scheduler";
 
 export { createTaskWorker, startTaskWorkers } from "./worker";
-export type { TaskWorker } from "./worker";
+export type { TaskWorker, TaskWorkerDbConfig } from "./worker";
 
 export { createTaskQueue } from "./queue";
 export type { TaskQueue } from "./queue";

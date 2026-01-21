@@ -28,6 +28,7 @@ export interface TaskContext {
   startedAt: Date;
   workerId: string;
   signal: AbortSignal;
+  db: unknown;
 }
 
 export interface TaskDefinition<TInput = unknown, TOutput = unknown> {

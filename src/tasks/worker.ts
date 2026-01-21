@@ -12,6 +12,12 @@ import { createTaskStorage } from "./storage";
 import { createDeadLetterQueue } from "./dlq";
 import { calculateBackoff, shouldRetry } from "./retry";
 import { TaskRegistry } from "./scheduler";
+import { DrizzleDatabase } from "@/resource/types";
+import {
+  trackMutations,
+  isTrackedDb,
+  TableRegistration,
+} from "@/resource/track-mutations";
 
 const WORKERS_KEY = "concave:tasks:workers";
 const NOTIFY_CHANNEL = "concave:tasks:notify";
@@ -27,16 +33,28 @@ export interface TaskWorker {
   getStats(): WorkerStats;
 }
 
+export interface TaskWorkerDbConfig {
+  db: DrizzleDatabase;
+  tables: Record<string, TableRegistration>;
+}
+
 export const createTaskWorker = (
   kv: KVAdapter,
   registry: TaskRegistry,
-  config: WorkerConfig = {}
+  config: WorkerConfig = {},
+  dbConfig?: TaskWorkerDbConfig
 ): TaskWorker => {
   const workerId = config.id ?? `worker-${crypto.randomUUID().slice(0, 8)}`;
   const concurrency = config.concurrency ?? 5;
   const pollInterval = config.pollIntervalMs ?? 1000;
   const lockTtl = Math.ceil((config.lockTtlMs ?? 30000) / 1000);
   const heartbeatInterval = config.heartbeatMs ?? 10000;
+
+  const trackedDb = dbConfig
+    ? isTrackedDb(dbConfig.db)
+      ? dbConfig.db
+      : trackMutations(dbConfig.db, dbConfig.tables)
+    : undefined;
 
   const lock = createTaskLock(kv);
   const queue = createTaskQueue(kv);
@@ -114,6 +132,7 @@ export const createTaskWorker = (
         startedAt: new Date(),
         workerId,
         signal: controller.signal,
+        db: trackedDb,
       };
 
       const timeoutMs = definition.timeout ?? 30000;
@@ -226,15 +245,21 @@ export const startTaskWorkers = async (
   kv: KVAdapter,
   registry: TaskRegistry,
   count: number = 1,
-  config: Omit<WorkerConfig, "id"> = {}
+  config: Omit<WorkerConfig, "id"> = {},
+  dbConfig?: TaskWorkerDbConfig
 ): Promise<TaskWorker[]> => {
   const workers: TaskWorker[] = [];
 
   for (let i = 0; i < count; i++) {
-    const worker = createTaskWorker(kv, registry, {
-      ...config,
-      id: `worker-${i}-${crypto.randomUUID().slice(0, 8)}`,
-    });
+    const worker = createTaskWorker(
+      kv,
+      registry,
+      {
+        ...config,
+        id: `worker-${i}-${crypto.randomUUID().slice(0, 8)}`,
+      },
+      dbConfig
+    );
     await worker.start();
     workers.push(worker);
   }

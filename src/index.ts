@@ -270,6 +270,7 @@ export type {
   TaskScheduler,
   TaskRegistry,
   TaskWorker,
+  TaskWorkerDbConfig,
 } from "./tasks";
 
 // Relations
