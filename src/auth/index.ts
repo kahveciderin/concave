@@ -4,7 +4,14 @@ export * from "./rsql";
 export * from "./scope";
 export * from "./middleware";
 export * from "./routes";
-export * from "./config";
+export {
+  createAuthAdapter,
+  createSessionStore,
+  type AuthMode,
+  type AuthConfig,
+  type AuthConfigUser,
+  type SessionStoreConfig,
+} from "./config";
 
 export { AuthJsAdapter, createAuthJsAdapter } from "./adapters/authjs";
 export { PassportAdapter, createPassportAdapter, fromPassportUser } from "./adapters/passport";

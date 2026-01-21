@@ -109,6 +109,10 @@ export {
 } from "./auth/scope";
 export { createPassportAdapter } from "./auth/adapters/passport";
 export { createAuthJsAdapter } from "./auth/adapters/authjs";
+export { createJWTAdapter } from "./auth/adapters/jwt";
+export type { JWTConfig, JWTAdapterOptions } from "./auth/adapters/jwt";
+export { createAuthAdapter, createSessionStore } from "./auth/config";
+export type { AuthMode, AuthConfig, AuthConfigUser, SessionStoreConfig } from "./auth/config";
 export { useAuth, createAuthRoutes } from "./auth/routes";
 export type { UseAuthOptions, AuthRouterResult, AuthUser } from "./auth/routes";
 export type {
