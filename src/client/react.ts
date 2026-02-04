@@ -260,9 +260,15 @@ export function useLiveList<
   };
 }
 
+export type AuthStrategy = "cookie" | "jwt" | "bearer" | "apiKey" | "auto";
+
 export interface UseAuthOptions {
   checkUrl?: string;
   logoutUrl?: string;
+  strategy?: AuthStrategy;
+  token?: string;
+  apiKey?: string;
+  baseUrl?: string;
 }
 
 export interface UseAuthResult<TUser = unknown> {
@@ -272,20 +278,39 @@ export interface UseAuthResult<TUser = unknown> {
   isLoading: boolean;
   logout: () => Promise<void>;
   refetch: () => Promise<void>;
+  accessToken: string | null;
 }
 
 /**
- * Auth hook that integrates with the Concave client.
+ * Auth hook that integrates with the Concave client and supports multiple auth strategies.
+ *
+ * Supports:
+ * - `cookie` - Session-based auth (cookies like `session`, `connect.sid`, Auth.js/NextAuth cookies)
+ * - `jwt` - JWT bearer token auth (uses the JWT client if configured)
+ * - `bearer` - Manual bearer token auth (provide token in options)
+ * - `apiKey` - API key auth (uses X-API-Key header)
+ * - `auto` (default) - Automatically detects based on client configuration
  *
  * @example
+ * // Auto-detect strategy (recommended when using createClient with jwt or auth config)
  * const { user, isAuthenticated, logout } = useAuth<User>();
  *
- * if (!isAuthenticated) return <LoginPage />;
- * return <App user={user} onLogout={logout} />;
+ * @example
+ * // Explicit JWT strategy
+ * const { user, isAuthenticated, logout, accessToken } = useAuth<User>({ strategy: 'jwt' });
+ *
+ * @example
+ * // Manual bearer token
+ * const { user, isAuthenticated } = useAuth<User>({ strategy: 'bearer', token: myToken });
+ *
+ * @example
+ * // API key auth
+ * const { user, isAuthenticated } = useAuth<User>({ strategy: 'apiKey', apiKey: 'my-api-key' });
  */
 export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthResult<TUser> {
   const [user, setUser] = useState<TUser | null>(null);
   const [status, setStatus] = useState<"loading" | "authenticated" | "unauthenticated">("loading");
+  const [accessToken, setAccessToken] = useState<string | null>(null);
 
   const client = useMemo(() => {
     try {
@@ -295,55 +320,153 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     }
   }, []);
 
-  const checkAuth = useCallback(async () => {
-    if (!client) {
-      // Fallback to direct fetch if no client
-      try {
-        const response = await fetch(options.checkUrl ?? "/api/auth/me", {
-          credentials: "include",
-        });
-        const data = await response.json();
-        if (data.user) {
-          setUser(data.user as TUser);
-          setStatus("authenticated");
-        } else {
-          setUser(null);
-          setStatus("unauthenticated");
+  const effectiveStrategy = useMemo((): AuthStrategy => {
+    if (options.strategy && options.strategy !== "auto") {
+      return options.strategy;
+    }
+    if (options.token) return "bearer";
+    if (options.apiKey) return "apiKey";
+    if (client?.jwt?.isAuthenticated?.() || client?.jwt?.getAccessToken?.()) {
+      return "jwt";
+    }
+    if (client?.auth?.isAuthenticated?.()) {
+      return "jwt";
+    }
+    return "cookie";
+  }, [options.strategy, options.token, options.apiKey, client]);
+
+  const baseUrl = useMemo(() => {
+    if (options.baseUrl) return options.baseUrl;
+    if (typeof window !== "undefined") return window.location.origin;
+    return "";
+  }, [options.baseUrl]);
+
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const headers: Record<string, string> = {};
+
+    switch (effectiveStrategy) {
+      case "jwt": {
+        const token = client?.jwt?.getAccessToken?.() ?? client?.auth?.getAccessToken?.();
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+          setAccessToken(token);
         }
-      } catch {
+        break;
+      }
+      case "bearer": {
+        if (options.token) {
+          headers["Authorization"] = `Bearer ${options.token}`;
+          setAccessToken(options.token);
+        }
+        break;
+      }
+      case "apiKey": {
+        if (options.apiKey) {
+          headers["X-API-Key"] = options.apiKey;
+        }
+        break;
+      }
+    }
+
+    return headers;
+  }, [effectiveStrategy, client, options.token, options.apiKey]);
+
+  const checkAuth = useCallback(async () => {
+    const authHeaders = getAuthHeaders();
+    const checkUrl = options.checkUrl ?? "/api/auth/me";
+    const fullUrl = checkUrl.startsWith("http") ? checkUrl : `${baseUrl}${checkUrl}`;
+
+    try {
+      const response = await fetch(fullUrl, {
+        credentials: effectiveStrategy === "cookie" ? "include" : "same-origin",
+        headers: authHeaders,
+      });
+
+      if (!response.ok) {
+        setUser(null);
+        setStatus("unauthenticated");
+        return;
+      }
+
+      const data = await response.json();
+      if (data.user) {
+        setUser(data.user as TUser);
+        setStatus("authenticated");
+      } else {
         setUser(null);
         setStatus("unauthenticated");
       }
-      return;
-    }
-
-    const result = await client.checkAuth(options.checkUrl);
-    if (result.user) {
-      setUser(result.user as TUser);
-      setStatus("authenticated");
-    } else {
+    } catch {
       setUser(null);
       setStatus("unauthenticated");
     }
-  }, [client, options.checkUrl]);
+  }, [baseUrl, options.checkUrl, effectiveStrategy, getAuthHeaders]);
 
   const logout = useCallback(async () => {
     const logoutUrl = options.logoutUrl ?? "/api/auth/logout";
+    const fullUrl = logoutUrl.startsWith("http") ? logoutUrl : `${baseUrl}${logoutUrl}`;
+    const authHeaders = getAuthHeaders();
+
     try {
-      await fetch(logoutUrl, {
-        method: "POST",
-        credentials: "include",
-      });
+      if (effectiveStrategy === "jwt" && client?.jwt) {
+        await client.jwt.logout();
+      } else {
+        await fetch(fullUrl, {
+          method: "POST",
+          credentials: effectiveStrategy === "cookie" ? "include" : "same-origin",
+          headers: authHeaders,
+        });
+      }
     } catch {
       // Ignore logout errors
     }
+
     setUser(null);
     setStatus("unauthenticated");
-  }, [options.logoutUrl]);
+    setAccessToken(null);
+  }, [baseUrl, options.logoutUrl, effectiveStrategy, getAuthHeaders, client]);
 
   useEffect(() => {
+    if (effectiveStrategy === "jwt" && client?.jwt) {
+      const unsubscribe = client.jwt.subscribe((rawState: unknown) => {
+        const state = rawState as { user?: unknown; isAuthenticated?: boolean; accessToken?: string | null };
+        if (state.isAuthenticated && state.user) {
+          setUser(state.user as TUser);
+          setStatus("authenticated");
+          setAccessToken(state.accessToken ?? null);
+        } else if (!state.isAuthenticated) {
+          setUser(null);
+          setStatus("unauthenticated");
+          setAccessToken(null);
+        }
+      });
+
+      const state = client.jwt.getState() as { user?: unknown; isAuthenticated?: boolean; accessToken?: string | null };
+      if (state.isAuthenticated && state.user) {
+        setUser(state.user as TUser);
+        setStatus("authenticated");
+        setAccessToken(state.accessToken ?? null);
+      } else if (state.accessToken) {
+        client.jwt.getUser().then((fetchedUser) => {
+          if (fetchedUser) {
+            setUser(fetchedUser as TUser);
+            setStatus("authenticated");
+            setAccessToken(state.accessToken ?? null);
+          } else {
+            setStatus("unauthenticated");
+          }
+        }).catch(() => {
+          setStatus("unauthenticated");
+        });
+      } else {
+        setStatus("unauthenticated");
+      }
+
+      return unsubscribe;
+    }
+
     checkAuth();
-  }, [checkAuth]);
+  }, [effectiveStrategy, client, checkAuth]);
 
   return {
     user,
@@ -352,6 +475,7 @@ export function useAuth<TUser = unknown>(options: UseAuthOptions = {}): UseAuthR
     isLoading: status === "loading",
     logout,
     refetch: checkAuth,
+    accessToken,
   };
 }
 

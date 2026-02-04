@@ -123,7 +123,7 @@ describe("Typegen", () => {
     expect(result.code).toContain("} as const;");
   });
 
-  it("should import types from concave/client", async () => {
+  it("should import types from @kahveciderin/concave/client", async () => {
     const { generateTypes } = await import("../../src/client/typegen");
 
     const result = await generateTypes({
@@ -132,7 +132,7 @@ describe("Typegen", () => {
       includeClient: true,
     });
 
-    expect(result.code).toContain('import type { ResourceClient, ConcaveClient } from "concave/client";');
+    expect(result.code).toContain('import type { ResourceClient, ConcaveClient } from "@kahveciderin/concave/client";');
   });
 
   it("should generate TypedResources using LiveQuery with type tracking", async () => {

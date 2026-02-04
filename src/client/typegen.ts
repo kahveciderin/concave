@@ -187,7 +187,7 @@ const generateTypeScript = (
 
   // Import types from the library - this is critical for type inference to work
   if (options.includeClient !== false) {
-    output += `import type { ResourceClient, ConcaveClient } from "concave/client";\n\n`;
+    output += `import type { ResourceClient, ConcaveClient } from "@kahveciderin/concave/client";\n\n`;
   }
 
   if (ns) {

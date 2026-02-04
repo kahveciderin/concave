@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   AuthManager,
   createAuthManager,
@@ -8,6 +8,8 @@ import {
   OIDCClient,
   createOIDCClient,
 } from "../../src/client/auth";
+
+let originalFetch: typeof global.fetch;
 
 const mockOIDCConfig = {
   issuer: "https://auth.example.com",
@@ -83,12 +85,18 @@ describe("Client Auth", () => {
     let client: OIDCClient;
 
     beforeEach(() => {
+      originalFetch = global.fetch;
       client = createOIDCClient(mockOIDCConfig);
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve(mockDiscoveryResponse),
       });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      vi.restoreAllMocks();
     });
 
     it("should fetch discovery document", async () => {
@@ -226,6 +234,7 @@ describe("Client Auth", () => {
     let tokenManager: TokenManager;
 
     beforeEach(() => {
+      originalFetch = global.fetch;
       storage = new MemoryStorage();
       oidcClient = createOIDCClient(mockOIDCConfig);
       tokenManager = createTokenManager(storage, oidcClient, mockOIDCConfig);
@@ -234,6 +243,11 @@ describe("Client Auth", () => {
         ok: true,
         json: () => Promise.resolve(mockDiscoveryResponse),
       });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      vi.restoreAllMocks();
     });
 
     it("should store and retrieve tokens", async () => {
@@ -298,12 +312,18 @@ describe("Client Auth", () => {
     let auth: AuthManager;
 
     beforeEach(() => {
+      originalFetch = global.fetch;
       auth = createAuthManager();
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve(mockDiscoveryResponse),
       });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      vi.restoreAllMocks();
     });
 
     it("should initialize with unauthenticated state", () => {

@@ -609,7 +609,7 @@ app.post("/posts", requirePermission("posts:create"), (req, res) => {
 
 ### useAuth Hook
 
-The `useAuth` hook provides authentication state in React:
+The `useAuth` hook provides authentication state in React and supports multiple authentication strategies:
 
 ```typescript
 import { getOrCreateClient } from "@kahveciderin/concave/client";
@@ -627,7 +627,7 @@ interface User {
 }
 
 function App() {
-  const { user, isAuthenticated, isLoading, logout } = useAuth<User>();
+  const { user, isAuthenticated, isLoading, logout, accessToken } = useAuth<User>();
 
   // Set global auth error handler
   useEffect(() => {
@@ -643,6 +643,162 @@ function App() {
       <button onClick={logout}>Sign out</button>
     </div>
   );
+}
+```
+
+### Auth Strategies
+
+The `useAuth` hook supports multiple authentication strategies:
+
+| Strategy | Description |
+|----------|-------------|
+| `cookie` | Session-based auth using cookies (default) |
+| `jwt` | JWT bearer token auth (uses JWT client if configured) |
+| `bearer` | Manual bearer token auth (provide token in options) |
+| `apiKey` | API key auth (uses X-API-Key header) |
+| `auto` | Auto-detect based on client configuration |
+
+```typescript
+// Cookie-based auth (default)
+const { user, isAuthenticated, logout } = useAuth<User>();
+
+// JWT auth (auto-detected if JWT client is configured)
+const { user, isAuthenticated, logout, accessToken } = useAuth<User>({ strategy: "jwt" });
+
+// Manual bearer token
+const { user, isAuthenticated } = useAuth<User>({ 
+  strategy: "bearer", 
+  token: myBearerToken 
+});
+
+// API key auth
+const { user, isAuthenticated } = useAuth<User>({ 
+  strategy: "apiKey", 
+  apiKey: "my-api-key" 
+});
+
+// Custom check URL (works with any strategy)
+const { user } = useAuth<User>({ 
+  checkUrl: "/api/auth/session",  // For Passport/NextAuth
+});
+```
+
+### useAuth Options
+
+```typescript
+interface UseAuthOptions {
+  checkUrl?: string;      // Custom endpoint to check auth (default: /api/auth/me)
+  logoutUrl?: string;     // Custom logout endpoint (default: /api/auth/logout)
+  strategy?: AuthStrategy; // Auth strategy (default: "auto")
+  token?: string;         // Bearer token (for "bearer" strategy)
+  apiKey?: string;        // API key (for "apiKey" strategy)
+  baseUrl?: string;       // Custom base URL for auth requests
+}
+
+interface UseAuthResult<TUser> {
+  user: TUser | null;                                // Current user
+  status: "loading" | "authenticated" | "unauthenticated";
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  logout: () => Promise<void>;
+  refetch: () => Promise<void>;
+  accessToken: string | null;                        // Current access token (JWT/bearer)
+}
+```
+
+### JWT Auth with Client
+
+When using JWT auth with the Concave client, the hook automatically integrates:
+
+```typescript
+import { getOrCreateClient } from "@kahveciderin/concave/client";
+import { useAuth, useJWTAuth } from "@kahveciderin/concave/client/react";
+
+// Option 1: Use createClient with jwt config
+const client = getOrCreateClient({
+  baseUrl: location.origin,
+  jwt: {
+    authPath: "/api/auth",  // JWT endpoints path
+  },
+});
+
+// The useAuth hook auto-detects JWT strategy
+function App() {
+  const { user, isAuthenticated, accessToken } = useAuth<User>();
+  // accessToken is automatically included in auth checks
+}
+
+// Option 2: Use dedicated JWT hook for full control
+import { initJWTClient, useJWTAuth } from "@kahveciderin/concave/client/react";
+
+initJWTClient({
+  baseUrl: location.origin,
+  authPath: "/api/auth",
+});
+
+function App() {
+  const { 
+    user, 
+    accessToken, 
+    isAuthenticated, 
+    login, 
+    signup, 
+    logout, 
+    refresh 
+  } = useJWTAuth<User>();
+
+  const handleLogin = async () => {
+    await login("user@example.com", "password");
+  };
+
+  const handleSignup = async () => {
+    await signup("user@example.com", "password", "John Doe");
+  };
+}
+```
+
+### Passport/NextAuth Compatibility
+
+The hook works seamlessly with Passport.js and NextAuth/Auth.js session endpoints:
+
+```typescript
+// Passport adapter - uses /api/auth/session
+const { user } = useAuth<User>({ 
+  checkUrl: "/api/auth/session" 
+});
+
+// NextAuth/Auth.js - uses cookie-based sessions
+// The hook automatically sends credentials with requests
+const { user } = useAuth<User>();
+
+// Passport with bearer token (for mobile apps, API clients)
+const { user } = useAuth<User>({
+  strategy: "bearer",
+  token: sessionToken,
+  checkUrl: "/api/auth/session",
+});
+```
+
+### OIDC Adapter Compatibility
+
+For OIDC-based authentication, the hook integrates with the auth manager:
+
+```typescript
+const client = getOrCreateClient({
+  baseUrl: location.origin,
+  auth: {
+    issuer: "https://auth.example.com",
+    clientId: "my-app",
+    redirectUri: location.origin + "/callback",
+  },
+});
+
+function App() {
+  // Auto-detects OIDC auth when auth manager has token
+  const { user, isAuthenticated, accessToken } = useAuth<User>();
+  
+  // accessToken contains the OIDC access token
+  // which is automatically included in auth checks
 }
 ```
 

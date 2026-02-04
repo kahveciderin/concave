@@ -8,8 +8,10 @@ import {
 describe("FetchTransport", () => {
   let transport: FetchTransport;
   let mockFetch: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof global.fetch;
 
   beforeEach(() => {
+    originalFetch = global.fetch;
     mockFetch = vi.fn();
     global.fetch = mockFetch;
     transport = new FetchTransport({
@@ -20,6 +22,7 @@ describe("FetchTransport", () => {
   });
 
   afterEach(() => {
+    global.fetch = originalFetch;
     vi.restoreAllMocks();
   });
 

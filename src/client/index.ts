@@ -178,10 +178,25 @@ export const createClient = (config: SimplifiedClientConfig): ConcaveClient => {
         return { user };
       }
 
+      if (jwtClient?.isAuthenticated()) {
+        const user = await jwtClient.getUser();
+        if (user) {
+          return { user };
+        }
+      }
+
       const authUrl = url ?? config.authCheckUrl ?? "/api/auth/me";
       try {
+        const headers: Record<string, string> = {};
+
+        const jwtToken = jwtClient?.getAccessToken();
+        if (jwtToken) {
+          headers["Authorization"] = `Bearer ${jwtToken}`;
+        }
+
         const response = await fetch(`${config.baseUrl}${authUrl}`, {
           credentials: config.credentials ?? "include",
+          headers: Object.keys(headers).length > 0 ? headers : undefined,
         });
         const data = await response.json();
         return {
