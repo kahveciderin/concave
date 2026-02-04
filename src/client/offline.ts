@@ -49,16 +49,32 @@ export class InMemoryOfflineStorage implements OfflineStorage {
   }
 }
 
+/**
+ * LocalStorage-based offline storage. Only works in browser environments.
+ * For React Native, use a custom OfflineStorage implementation with AsyncStorage.
+ */
 export class LocalStorageOfflineStorage implements OfflineStorage {
   private storageKey: string;
 
   constructor(storageKey = "concave_offline_mutations") {
     this.storageKey = storageKey;
+    if (typeof localStorage === "undefined") {
+      console.warn(
+        "LocalStorageOfflineStorage: localStorage is not available. " +
+        "Use InMemoryOfflineStorage or provide a custom OfflineStorage implementation for React Native."
+      );
+    }
+  }
+
+  private getStorage(): Storage | null {
+    return typeof localStorage !== "undefined" ? localStorage : null;
   }
 
   async getMutations(): Promise<OfflineMutation[]> {
     try {
-      const data = localStorage.getItem(this.storageKey);
+      const storage = this.getStorage();
+      if (!storage) return [];
+      const data = storage.getItem(this.storageKey);
       return data ? JSON.parse(data) : [];
     } catch {
       return [];
@@ -66,28 +82,36 @@ export class LocalStorageOfflineStorage implements OfflineStorage {
   }
 
   async addMutation(mutation: OfflineMutation): Promise<void> {
+    const storage = this.getStorage();
+    if (!storage) return;
     const mutations = await this.getMutations();
     mutations.push(mutation);
-    localStorage.setItem(this.storageKey, JSON.stringify(mutations));
+    storage.setItem(this.storageKey, JSON.stringify(mutations));
   }
 
   async updateMutation(id: string, update: Partial<OfflineMutation>): Promise<void> {
+    const storage = this.getStorage();
+    if (!storage) return;
     const mutations = await this.getMutations();
     const index = mutations.findIndex((m) => m.id === id);
     if (index !== -1) {
       mutations[index] = { ...mutations[index], ...update };
-      localStorage.setItem(this.storageKey, JSON.stringify(mutations));
+      storage.setItem(this.storageKey, JSON.stringify(mutations));
     }
   }
 
   async removeMutation(id: string): Promise<void> {
+    const storage = this.getStorage();
+    if (!storage) return;
     const mutations = await this.getMutations();
     const filtered = mutations.filter((m) => m.id !== id);
-    localStorage.setItem(this.storageKey, JSON.stringify(filtered));
+    storage.setItem(this.storageKey, JSON.stringify(filtered));
   }
 
   async clear(): Promise<void> {
-    localStorage.removeItem(this.storageKey);
+    const storage = this.getStorage();
+    if (!storage) return;
+    storage.removeItem(this.storageKey);
   }
 }
 
@@ -226,6 +250,7 @@ export class OfflineManager {
   private onSyncComplete?: () => void;
   private onIdRemapped?: (optimisticId: string, serverId: string) => void;
   private idMappings: Map<string, string> = new Map();
+  private cleanupNetworkListeners?: () => void;
 
   constructor(managerConfig: OfflineManagerConfig) {
     this.config = managerConfig.config;
@@ -235,11 +260,55 @@ export class OfflineManager {
     this.onSyncComplete = managerConfig.onSyncComplete;
     this.onIdRemapped = managerConfig.onIdRemapped ?? this.config.onIdRemapped;
 
-    if (typeof window !== "undefined") {
-      window.addEventListener("online", () => this.handleOnline());
-      window.addEventListener("offline", () => this.handleOffline());
+    this.setupNetworkListeners();
+  }
+
+  /**
+   * Set up network status listeners. Works in browser environments.
+   * For React Native, use setOnlineStatus() method with NetInfo.
+   */
+  private setupNetworkListeners(): void {
+    // Check initial online status
+    if (typeof navigator !== "undefined" && "onLine" in navigator) {
       this.isOnline = navigator.onLine;
     }
+
+    // Set up event listeners for browser environments
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      const handleOnline = () => this.handleOnline();
+      const handleOffline = () => this.handleOffline();
+
+      window.addEventListener("online", handleOnline);
+      window.addEventListener("offline", handleOffline);
+
+      this.cleanupNetworkListeners = () => {
+        window.removeEventListener("online", handleOnline);
+        window.removeEventListener("offline", handleOffline);
+      };
+    }
+  }
+
+  /**
+   * Manually set online status. Useful for React Native with NetInfo.
+   * @example
+   * // React Native with @react-native-community/netinfo
+   * NetInfo.addEventListener(state => {
+   *   offlineManager.setOnlineStatus(state.isConnected ?? false);
+   * });
+   */
+  setOnlineStatus(online: boolean): void {
+    const wasOffline = !this.isOnline;
+    this.isOnline = online;
+    if (online && wasOffline) {
+      this.syncPendingMutations();
+    }
+  }
+
+  /**
+   * Clean up event listeners. Call this when disposing the manager.
+   */
+  destroy(): void {
+    this.cleanupNetworkListeners?.();
   }
 
   private handleOnline(): void {

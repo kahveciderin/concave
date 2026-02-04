@@ -109,12 +109,48 @@ export class FetchTransport implements Transport {
     }
   }
 
+  /**
+   * Create an EventSource for server-sent events.
+   * Note: EventSource is not available in React Native by default.
+   * For React Native, use a polyfill like 'react-native-sse' or
+   * configure a custom EventSource via setEventSourceConstructor().
+   */
   createEventSource(path: string, params?: Record<string, string>): EventSource {
     const url = this.buildUrl(path, params);
 
-    return new EventSource(url, {
+    const EventSourceImpl = this.getEventSourceConstructor();
+    if (!EventSourceImpl) {
+      throw new Error(
+        "EventSource is not available. For React Native, install a polyfill like " +
+        "'react-native-sse' and call transport.setEventSourceConstructor(EventSource)."
+      );
+    }
+
+    return new EventSourceImpl(url, {
       withCredentials: this.config.credentials === "include",
     });
+  }
+
+  private eventSourceConstructor?: typeof EventSource;
+
+  /**
+   * Set a custom EventSource constructor. Useful for React Native with polyfills.
+   * @example
+   * import EventSource from 'react-native-sse';
+   * transport.setEventSourceConstructor(EventSource);
+   */
+  setEventSourceConstructor(constructor: typeof EventSource): void {
+    this.eventSourceConstructor = constructor;
+  }
+
+  private getEventSourceConstructor(): typeof EventSource | undefined {
+    if (this.eventSourceConstructor) {
+      return this.eventSourceConstructor;
+    }
+    if (typeof EventSource !== "undefined") {
+      return EventSource;
+    }
+    return undefined;
   }
 }
 

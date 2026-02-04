@@ -78,6 +78,22 @@ export class AuthManager {
     return this.state;
   }
 
+  /**
+   * Build the authorization URL without redirecting. Useful for React Native
+   * where you need to handle navigation differently (e.g., using Linking or WebBrowser).
+   */
+  async getAuthorizationUrl(options?: { prompt?: "none" | "login" | "consent" }): Promise<string> {
+    if (!this.oidcClient || !this.tokenManager) {
+      throw new Error("Auth not configured. Call configure() first.");
+    }
+
+    const challenge = await this.oidcClient.generatePKCEChallenge();
+    await this.tokenManager.storePKCEChallenge(challenge);
+
+    const authUrl = await this.oidcClient.buildAuthorizationUrl(challenge);
+    return options?.prompt ? `${authUrl}&prompt=${options.prompt}` : authUrl;
+  }
+
   async login(options?: { prompt?: "none" | "login" | "consent" }): Promise<void> {
     if (!this.oidcClient || !this.tokenManager || !this.config) {
       throw new Error("Auth not configured. Call configure() first.");
@@ -86,18 +102,20 @@ export class AuthManager {
     this.updateState({ status: "authenticating" });
 
     try {
-      const challenge = await this.oidcClient.generatePKCEChallenge();
-      await this.tokenManager.storePKCEChallenge(challenge);
-
-      const authUrl = await this.oidcClient.buildAuthorizationUrl(challenge);
-      const finalUrl = options?.prompt
-        ? `${authUrl}&prompt=${options.prompt}`
-        : authUrl;
+      const finalUrl = await this.getAuthorizationUrl(options);
 
       if (this.config.flowType === "popup") {
         await this.loginWithPopup(finalUrl);
       } else {
-        window.location.href = finalUrl;
+        // Browser redirect flow
+        if (typeof window !== "undefined" && "location" in window) {
+          window.location.href = finalUrl;
+        } else {
+          throw new Error(
+            "Browser redirect not available. Use getAuthorizationUrl() for React Native " +
+            "and handle navigation with Linking or expo-web-browser."
+          );
+        }
       }
     } catch (error) {
       this.updateState({
@@ -109,11 +127,19 @@ export class AuthManager {
   }
 
   private async loginWithPopup(authUrl: string): Promise<void> {
+    // Popup flow only works in browser environments
+    if (typeof window === "undefined" || typeof window.open !== "function") {
+      throw new Error(
+        "Popup login is not available in this environment. " +
+        "Use getAuthorizationUrl() for React Native."
+      );
+    }
+
     return new Promise((resolve, reject) => {
       const width = 500;
       const height = 600;
-      const left = window.screenX + (window.outerWidth - width) / 2;
-      const top = window.screenY + (window.outerHeight - height) / 2;
+      const left = (window.screenX ?? 0) + ((window.outerWidth ?? 800) - width) / 2;
+      const top = (window.screenY ?? 0) + ((window.outerHeight ?? 600) - height) / 2;
 
       const popup = window.open(
         authUrl,
@@ -163,7 +189,17 @@ export class AuthManager {
       throw new Error("Auth not configured. Call configure() first.");
     }
 
-    const url = callbackUrl ?? window.location.href;
+    let url = callbackUrl;
+    if (!url) {
+      if (typeof window !== "undefined" && "location" in window) {
+        url = window.location.href;
+      } else {
+        throw new Error(
+          "callbackUrl is required in non-browser environments. " +
+          "Pass the callback URL from your deep link handler."
+        );
+      }
+    }
     const params = this.oidcClient.parseCallbackParams(url);
 
     if (params.error) {
@@ -214,9 +250,15 @@ export class AuthManager {
         accessToken: tokens.accessToken,
       });
 
-      if (typeof window !== "undefined" && !callbackUrl) {
-        const cleanUrl = window.location.origin + window.location.pathname;
-        window.history.replaceState({}, document.title, cleanUrl);
+      // Clean up URL in browser environments (remove auth params)
+      if (typeof window !== "undefined" && !callbackUrl && "history" in window && "location" in window) {
+        try {
+          const cleanUrl = window.location.origin + window.location.pathname;
+          const title = typeof document !== "undefined" ? document.title : "";
+          window.history.replaceState({}, title, cleanUrl);
+        } catch {
+          // Ignore errors - URL cleanup is not critical
+        }
       }
 
       return this.state;
@@ -226,6 +268,25 @@ export class AuthManager {
         error: error as Error,
       });
       throw error;
+    }
+  }
+
+  /**
+   * Build the logout URL without redirecting. Useful for React Native
+   * where you need to handle navigation differently.
+   */
+  async getLogoutUrl(): Promise<string | null> {
+    if (!this.oidcClient || !this.tokenManager) {
+      return null;
+    }
+
+    const idToken = this.tokenManager.getTokens()?.idToken;
+    if (!idToken) return null;
+
+    try {
+      return await this.oidcClient.buildLogoutUrl(idToken);
+    } catch {
+      return null;
     }
   }
 
@@ -249,7 +310,11 @@ export class AuthManager {
     if (!options?.localOnly && this.oidcClient && idToken) {
       try {
         const logoutUrl = await this.oidcClient.buildLogoutUrl(idToken);
-        window.location.href = logoutUrl;
+        // Only redirect in browser environments
+        if (typeof window !== "undefined" && "location" in window) {
+          window.location.href = logoutUrl;
+        }
+        // In React Native, use getLogoutUrl() and handle with Linking
       } catch {
         // Ignore logout URL errors - local logout succeeded
       }

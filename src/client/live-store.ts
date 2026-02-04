@@ -424,14 +424,23 @@ export const createLiveQuery = <T extends { id: string }>(
     await refresh();
   };
 
+  // Helper to check online status across platforms (browser, React Native, Node)
+  const isOnline = (): boolean => {
+    if (typeof navigator !== "undefined" && "onLine" in navigator) {
+      return navigator.onLine;
+    }
+    // Assume online if we can't detect (Node.js, React Native without NetInfo)
+    return true;
+  };
+
   const handleConnected = (seq: number) => {
     lastSeq = seq;
-    status = navigator.onLine ? "live" : "offline";
+    status = isOnline() ? "live" : "offline";
     notify();
   };
 
   const handleDisconnected = () => {
-    status = navigator.onLine ? "reconnecting" : "offline";
+    status = isOnline() ? "reconnecting" : "offline";
     notify();
   };
 
@@ -573,7 +582,10 @@ export const createLiveQuery = <T extends { id: string }>(
 
   init();
 
-  if (typeof window !== "undefined") {
+  // Network status handlers - works in browser, can be overridden for React Native
+  let cleanupNetworkListeners: (() => void) | undefined;
+
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     const handleOnline = () => {
       if (status === "offline" || status === "reconnecting") {
         status = subscription ? "reconnecting" : "offline";
@@ -589,6 +601,11 @@ export const createLiveQuery = <T extends { id: string }>(
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
+
+    cleanupNetworkListeners = () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
   }
 
   const loadMore = async () => {
@@ -740,6 +757,7 @@ export const createLiveQuery = <T extends { id: string }>(
       subscription?.unsubscribe();
       listeners.clear();
       cache.clear();
+      cleanupNetworkListeners?.();
     },
   };
 };

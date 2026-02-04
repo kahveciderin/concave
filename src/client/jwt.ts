@@ -18,11 +18,36 @@ export class MemoryTokenStorage implements TokenStorage {
   remove(key: string) { this.store.delete(key); }
 }
 
+/**
+ * LocalStorage-based token storage. Only works in browser environments.
+ * For React Native, use a custom TokenStorage implementation with AsyncStorage
+ * or use MemoryTokenStorage for testing.
+ */
 export class LocalStorageTokenStorage implements TokenStorage {
-  constructor(private prefix = "concave_jwt_") {}
-  get(key: string) { return localStorage.getItem(this.prefix + key); }
-  set(key: string, value: string) { localStorage.setItem(this.prefix + key, value); }
-  remove(key: string) { localStorage.removeItem(this.prefix + key); }
+  constructor(private prefix = "concave_jwt_") {
+    if (typeof localStorage === "undefined") {
+      console.warn(
+        "LocalStorageTokenStorage: localStorage is not available. " +
+        "Use MemoryTokenStorage or provide a custom TokenStorage implementation for React Native."
+      );
+    }
+  }
+
+  private getStorage(): Storage | null {
+    return typeof localStorage !== "undefined" ? localStorage : null;
+  }
+
+  get(key: string) {
+    return this.getStorage()?.getItem(this.prefix + key) ?? null;
+  }
+
+  set(key: string, value: string) {
+    this.getStorage()?.setItem(this.prefix + key, value);
+  }
+
+  remove(key: string) {
+    this.getStorage()?.removeItem(this.prefix + key);
+  }
 }
 
 export interface JWTTokens {

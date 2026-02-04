@@ -93,7 +93,10 @@ export interface UseFileResult {
   isLoading: boolean;
   error: Error | null;
   fetch: (id: string) => Promise<void>;
+  /** Open the file download in a new browser tab. Only works in browser environments. */
   download: () => void;
+  /** Get the download URL. Useful for React Native with Linking.openURL(). */
+  getDownloadUrl: () => string | null;
   deleteFile: () => Promise<void>;
 }
 
@@ -132,9 +135,28 @@ export function useFile(
     [fileClient]
   );
 
+  /**
+   * Get the download URL for the file. Useful for React Native where
+   * you need to handle downloads differently (e.g., with Linking or a download manager).
+   */
+  const getDownloadUrl = useCallback(() => {
+    return fileId ? fileClient.getDownloadUrl(fileId) : null;
+  }, [fileClient, fileId]);
+
+  /**
+   * Open the file download in a new browser tab. Only works in browser environments.
+   * For React Native, use getDownloadUrl() with Linking.openURL().
+   */
   const download = useCallback(() => {
     if (fileId) {
-      window.open(fileClient.getDownloadUrl(fileId), "_blank");
+      const url = fileClient.getDownloadUrl(fileId);
+      if (typeof window !== "undefined" && typeof window.open === "function") {
+        window.open(url, "_blank");
+      } else {
+        console.warn(
+          "window.open is not available. Use getDownloadUrl() with Linking.openURL() for React Native."
+        );
+      }
     }
   }, [fileClient, fileId]);
 
@@ -156,6 +178,7 @@ export function useFile(
     error,
     fetch,
     download,
+    getDownloadUrl,
     deleteFile,
   };
 }

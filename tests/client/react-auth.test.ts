@@ -446,10 +446,17 @@ describe("useAuth hook logic", () => {
 
 describe("Passport adapter compatibility", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof global.fetch;
 
   beforeEach(() => {
+    originalFetch = global.fetch;
     mockFetch = vi.fn();
     global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
   });
 
   it("should work with passport session endpoint", async () => {
@@ -496,10 +503,17 @@ describe("Passport adapter compatibility", () => {
 
 describe("AuthJS/NextAuth adapter compatibility", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof global.fetch;
 
   beforeEach(() => {
+    originalFetch = global.fetch;
     mockFetch = vi.fn();
     global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
   });
 
   it("should work with authjs session endpoint", async () => {
@@ -547,10 +561,17 @@ describe("AuthJS/NextAuth adapter compatibility", () => {
 
 describe("OIDC adapter compatibility", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof global.fetch;
 
   beforeEach(() => {
+    originalFetch = global.fetch;
     mockFetch = vi.fn();
     global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
   });
 
   it("should include OIDC access token in Authorization header", async () => {
@@ -576,10 +597,17 @@ describe("OIDC adapter compatibility", () => {
 
 describe("JWT adapter compatibility", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
+  let originalFetch: typeof global.fetch;
 
   beforeEach(() => {
+    originalFetch = global.fetch;
     mockFetch = vi.fn();
     global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
   });
 
   it("should include JWT in Authorization header for /api/auth/me", async () => {
@@ -630,6 +658,17 @@ describe("Type safety", () => {
     email: string;
     customField: string;
   }
+
+  let originalFetch: typeof global.fetch;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
 
   it("should support custom user type in response", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
